@@ -1,0 +1,13 @@
+.env
+*.pyc
+__pycache__/
+*.db
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+.DS_Store
+.claude/
+.claude-flow/
+.mcp.json
