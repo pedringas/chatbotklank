@@ -236,7 +236,17 @@ async def ml_oauth_callback(request: Request):
                     "redirect_uri": redirect_uri,
                 },
             )
-            resp.raise_for_status()
+            if not resp.is_success:
+                return JSONResponse({
+                    "error_http": resp.status_code,
+                    "error_ml": resp.json(),
+                    "debug": {
+                        "ml_app_id": ml_app_id,
+                        "redirect_uri_usado": redirect_uri,
+                        "client_secret_cargado": bool(client_secret),
+                        "code": code[:10] + "...",
+                    }
+                }, status_code=400)
             data = resp.json()
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
