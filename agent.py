@@ -284,7 +284,9 @@ async def process_message(phone_number: str, message: str) -> str:
             stock_context = (
                 f"\n[El cliente compartió una URL de ML. Buscamos ese producto en {source_label}]\n"
                 + "\n".join(lines)
-                + "\n[IMPORTANTE: Aclará que consultaste en nuestra tienda y ML, y mostrá los resultados con links exactos.]"
+                + "\n[IMPORTANTE: El campo Stock muestra las unidades disponibles exactas en este momento. "
+                "Usá ese número para responder preguntas sobre cantidad disponible. "
+                "Mostrá precio y link exactos. No inventes información adicional.]"
             )
         else:
             stock_context = (
@@ -321,7 +323,10 @@ async def process_message(phone_number: str, message: str) -> str:
                 stock_context = (
                     f"\n[Resultados reales de búsqueda en {source_label}]\n"
                     + "\n".join(lines)
-                    + "\n[IMPORTANTE: Solo mencioná estos productos con sus precios y links exactos. No inventes otros ni generes links propios.]"
+                    + "\n[IMPORTANTE: El campo Stock muestra las unidades exactas disponibles. "
+                    "Usá ese número si te preguntan por cantidad. "
+                    "Solo mencioná estos productos con sus precios y links exactos. No inventes otros ni generes links propios. "
+                    "NUNCA prometás avisar cuando vuelva el stock — no tenés esa capacidad.]"
                 )
             else:
                 stock_context = (
