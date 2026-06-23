@@ -97,6 +97,11 @@ async def _handle_webhook(body: dict) -> None:
 
                 logger.info("Mensaje recibido de %s: %s", phone, text[:60])
 
+                # Mandar mensaje de "buscando..." solo si es consulta de producto
+                from agent import _is_product_query
+                if _is_product_query(text):
+                    await send_whatsapp_message(phone, "Dejame buscar un momento 🔍")
+
                 response = await process_message(phone, text)
                 await send_whatsapp_message(phone, response)
 
