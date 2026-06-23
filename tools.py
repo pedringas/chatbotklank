@@ -124,12 +124,15 @@ async def search_tiendanube(query: str) -> dict:
     Busca productos en Tienda Nube que coincidan con el query.
     Retorna lista de hasta 3 productos con nombre, precio, stock, link e imagen.
     """
-    url = f"https://api.tiendanube.com/v1/{TN_STORE_ID}/products"
+    # Leer token dinámicamente para capturar actualizaciones sin reiniciar
+    tn_token = os.getenv("TN_ACCESS_TOKEN", TN_ACCESS_TOKEN)
+    tn_store = os.getenv("TN_STORE_ID", TN_STORE_ID)
+    url = f"https://api.tiendanube.com/v1/{tn_store}/products"
     headers = {
-        "Authentication": f"bearer {TN_ACCESS_TOKEN}",
+        "Authentication": f"bearer {tn_token}",
         "User-Agent": "Klank-Agent/1.0",
     }
-    params = {"q": query, "fields": "name,variants,permalink,images", "per_page": 5}
+    params = {"q": query, "fields": "name,variants,permalink,images,canonical_url", "per_page": 5}
 
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
@@ -147,12 +150,16 @@ async def search_tiendanube(query: str) -> dict:
             image = ""
             if item.get("images"):
                 image = item["images"][0].get("src", "")
+            # Usar precio promocional si existe, sino precio normal
+            price = variant.get("promotional_price") or variant.get("price")
+            # Preferir canonical_url (tienda propia) sobre permalink
+            link = item.get("canonical_url") or item.get("permalink", "")
             products.append(
                 {
                     "title": item.get("name", {}).get("es", "") or str(item.get("name", "")),
-                    "price": variant.get("price"),
+                    "price": price,
                     "stock": variant.get("stock"),
-                    "permalink": item.get("permalink", ""),
+                    "permalink": link,
                     "thumbnail": image,
                 }
             )
