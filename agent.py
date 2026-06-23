@@ -90,6 +90,8 @@ REGLAS INAMOVIBLES:
 - Nunca listés productos específicos sin tenerlos en los resultados de búsqueda. Si el cliente pide una categoría amplia ("juguetes para nena"), preguntá qué producto específico busca antes de buscar
 - Si la búsqueda no devuelve resultados, decí honestamente que no encontraste ese producto en este momento. No sugieras productos que no tenés en los resultados
 - Si la búsqueda falla por error técnico, derivá a un asesor
+- NUNCA narres el proceso de búsqueda al cliente ("voy a buscar en TN", "ahora verifico en ML", "..."). Directamente mostrá el resultado final
+- No uses "..." ni puntos suspensivos en tus respuestas
 - Nunca comparés precios con la competencia
 - Nunca generes links propios — solo usá los links que vienen en los resultados de búsqueda
 
@@ -197,8 +199,11 @@ async def _extract_search_query(message: str) -> str:
                 {
                     "role": "system",
                     "content": (
-                        "Extraé el nombre del producto que busca el cliente en 1-4 palabras clave "
-                        "para buscar en MercadoLibre. Solo devolvé las palabras clave, sin explicación. "
+                        "Extraé el nombre genérico del producto que busca el cliente en 1-2 palabras clave "
+                        "para buscar en una tienda. Usá el término más simple y genérico posible. "
+                        "Ejemplos: 'cocina gigante de juguete' → 'cocina', 'pelota sensorial 15cm' → 'pelota sensorial', "
+                        "'funkopop spiderman' → 'funko spiderman'. "
+                        "Solo devolvé las palabras clave, sin explicación. "
                         "Si el mensaje no es una consulta de producto, devolvé vacío."
                     ),
                 },
