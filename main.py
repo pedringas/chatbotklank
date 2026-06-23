@@ -18,7 +18,7 @@ from config import (
     ENVIRONMENT,
 )
 from memory import init_db
-from agent import process_message, needs_human_handoff, load_knowledge_base
+from agent import process_message, needs_human_handoff, load_knowledge_base, _is_product_query
 from chatwoot import (
     create_or_get_contact,
     get_or_create_conversation,
@@ -98,7 +98,6 @@ async def _handle_webhook(body: dict) -> None:
                 logger.info("Mensaje recibido de %s: %s", phone, text[:60])
 
                 # Mandar mensaje de "buscando..." solo si es consulta de producto
-                from agent import _is_product_query
                 if _is_product_query(text):
                     await send_whatsapp_message(phone, "Dejame buscar un momento 🔍")
 

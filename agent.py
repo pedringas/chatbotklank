@@ -9,7 +9,7 @@ import glob
 from openai import AsyncOpenAI
 from config import OPENAI_API_KEY
 from memory import get_history, save_message
-from tools import search_mercadolibre, search_tiendanube
+from tools import search_products
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +71,9 @@ CONSULTAS DE STOCK Y PRODUCTOS
 
 Para cada consulta de producto seguís este flujo exacto:
 
-PASO 1 — Buscar en MercadoLibre primero (fuente principal)
-PASO 2 — Si ML no tiene resultados o falla, buscar en Tienda Nube (fuente secundaria)
-PASO 3 — Presentar resultados
+PASO 1 — Buscar en Tienda Nube primero (tienda propia de Klank, preferida)
+PASO 2 — Si TN no tiene resultados, buscar en MercadoLibre como alternativa
+PASO 3 — Presentar resultados. Si el producto está en Tienda Nube, priorizá ese link
 
 FORMATO CON STOCK DISPONIBLE:
 "Sí, tenemos [nombre]. Precio: $[precio]. Lo podés ver acá: [link]"
@@ -82,13 +82,16 @@ Si hay más de un resultado relevante, mostrás hasta 2 opciones máximo.
 FORMATO SIN STOCK:
 "Ese producto no tenemos en este momento.
 [Si hay similar]: Sí tenemos [similar] que puede servirte, ¿querés el link?
-¿Te aviso cuando vuelva a haber stock? Solo decime que sí y te anoto 🙌"
+Si querés recibir una notificación cuando vuelva a estar disponible, podés seguirnos en MercadoLibre y activar la alerta en la publicación."
 
 REGLAS INAMOVIBLES:
 - Nunca inventés un precio. Si no lo tenés de la API, no lo decís
 - Nunca confirmés stock que no verificaste en tiempo real
-- Si la búsqueda falla por error técnico: "Tuve un problema para consultar el stock ahora, probá en unos minutos o escribinos por Instagram"
+- Nunca listés productos específicos sin tenerlos en los resultados de búsqueda. Si el cliente pide una categoría amplia ("juguetes para nena"), preguntá qué producto específico busca antes de buscar
+- Si la búsqueda no devuelve resultados, decí honestamente que no encontraste ese producto en este momento. No sugieras productos que no tenés en los resultados
+- Si la búsqueda falla por error técnico, derivá a un asesor
 - Nunca comparés precios con la competencia
+- Nunca generes links propios — solo usá los links que vienen en los resultados de búsqueda
 
 ═══════════════════════════════
 CONSULTAS SOBRE PAGOS, ENVÍOS Y RETIRO
@@ -130,7 +133,7 @@ Cuándo derivar:
 - El cliente hace 2 preguntas seguidas que no podés responder
 
 Texto de derivación — usar EXACTAMENTE este, sin modificarlo:
-"Esta consulta la tiene que ver un asesor de Klank. Te respondemos a la brevedad por este mismo chat. También podés escribirnos por Instagram: @klank.com.ar 🙌"
+"Esta consulta la tiene que ver un asesor de Klank. Te respondemos a la brevedad por este mismo chat 🙌"
 
 Después de derivar: no sigas intentando resolver. La conversación queda en manos del equipo humano.
 
@@ -224,8 +227,10 @@ async def process_message(phone_number: str, message: str) -> str:
     if _is_product_query(message):
         search_query = await _extract_search_query(message)
         if search_query:
-            result = await search_mercadolibre(search_query)
+            result = await search_products(search_query)
             products = result.get("products", [])
+            source = result.get("source", "tiendanube")
+            source_label = "Tienda Nube (tienda propia)" if source == "tiendanube" else "MercadoLibre"
             if products:
                 lines = []
                 for p in products[:2]:
@@ -233,13 +238,13 @@ async def process_message(phone_number: str, message: str) -> str:
                         f"- {p['title']} | Precio: ${p['price']} | Stock: {p['stock']} | {p['permalink']}"
                     )
                 stock_context = (
-                    "\n[Resultados reales de búsqueda en MercadoLibre]\n"
+                    f"\n[Resultados reales de búsqueda en {source_label}]\n"
                     + "\n".join(lines)
-                    + "\n[IMPORTANTE: Solo mencioná estos productos. No inventes otros ni generes links propios. Si no hay resultados, decí que no encontraste nada.]"
+                    + "\n[IMPORTANTE: Solo mencioná estos productos con sus precios y links exactos. No inventes otros ni generes links propios.]"
                 )
             else:
                 stock_context = (
-                    "\n[Búsqueda en MercadoLibre: sin resultados para este producto]"
+                    "\n[Búsqueda realizada: sin resultados para este producto en ninguna fuente]"
                     "\n[IMPORTANTE: No inventes productos ni links. Decí honestamente que no encontraste ese producto en este momento.]"
                 )
 

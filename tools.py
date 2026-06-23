@@ -1,6 +1,6 @@
 """
 Consultas de stock a MercadoLibre y Tienda Nube.
-ML es la fuente primaria; TN es el fallback automático si ML falla o no devuelve resultados.
+TN es la fuente primaria (tienda propia, mejor margen); ML es el fallback automático.
 """
 
 import logging
@@ -137,6 +137,10 @@ async def search_tiendanube(query: str) -> dict:
             resp.raise_for_status()
             data = resp.json()
 
+        if not isinstance(data, list):
+            logger.warning("Tienda Nube devolvió respuesta inesperada: %s", type(data))
+            return {"source": "tiendanube", "products": []}
+
         products = []
         for item in data[:3]:
             variant = item.get("variants", [{}])[0] if item.get("variants") else {}
@@ -186,6 +190,17 @@ async def get_product_by_id_ml(item_id: str) -> dict:
     except Exception as e:
         logger.error("Error obteniendo ítem ML %s: %s", item_id, e)
         return {"error": f"No se pudo obtener el producto {item_id}."}
+
+
+async def search_products(query: str) -> dict:
+    """
+    Busca productos con TN como fuente primaria y ML como fallback.
+    TN primero porque es la tienda propia (mejor margen para Klank).
+    """
+    result = await search_tiendanube(query)
+    if result.get("products"):
+        return result
+    return await search_mercadolibre(query)
 
 
 # ─── Test básico ───────────────────────────────────────────────────────────────
