@@ -187,16 +187,27 @@ async def diagnostics():
     except Exception as e:
         results["tiendanube"] = {"status": f"❌ {str(e)}"}
 
-    # Test búsqueda real
+    # Test búsqueda real — llamadas directas para ver errores
+    from tools import search_tiendanube as _tn, search_mercadolibre as _ml
     try:
-        search_result = await search_products("juguete")
-        results["busqueda_test"] = {
-            "status": "✅ ok",
-            "fuente": search_result.get("source"),
-            "productos_encontrados": len(search_result.get("products", [])),
+        tn_result = await _tn("juguete")
+        results["busqueda_tn"] = {
+            "fuente": tn_result.get("source"),
+            "productos": len(tn_result.get("products", [])),
+            "error": tn_result.get("error"),
         }
     except Exception as e:
-        results["busqueda_test"] = {"status": f"❌ {str(e)}"}
+        results["busqueda_tn"] = {"error": str(e)}
+
+    try:
+        ml_result = await _ml("juguete")
+        results["busqueda_ml"] = {
+            "fuente": ml_result.get("source"),
+            "productos": len(ml_result.get("products", [])),
+            "error": ml_result.get("error"),
+        }
+    except Exception as e:
+        results["busqueda_ml"] = {"error": str(e)}
 
     return results
 
