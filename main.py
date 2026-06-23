@@ -136,6 +136,71 @@ async def send_whatsapp_message(phone_number: str, message: str) -> None:
         logger.error("Error enviando mensaje WhatsApp a %s: %s", phone_number, e)
 
 
+# ─── Diagnóstico de conexiones ────────────────────────────────────────────────
+
+@app.get("/diagnostics")
+async def diagnostics():
+    """Verifica en tiempo real la conexión con ML y Tienda Nube."""
+    from tools import search_products
+    from config import ML_SELLER_ID, TN_STORE_ID
+
+    results = {}
+
+    # Test MercadoLibre
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"https://api.mercadolibre.com/users/{ML_SELLER_ID}",
+                headers={"Authorization": f"Bearer {os.getenv('ML_ACCESS_TOKEN', '')}"},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                results["mercadolibre"] = {
+                    "status": "✅ conectado",
+                    "seller": data.get("nickname", ""),
+                    "seller_id": ML_SELLER_ID,
+                }
+            else:
+                results["mercadolibre"] = {"status": f"❌ error {resp.status_code}"}
+    except Exception as e:
+        results["mercadolibre"] = {"status": f"❌ {str(e)}"}
+
+    # Test Tienda Nube
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"https://api.tiendanube.com/v1/{TN_STORE_ID}/store",
+                headers={
+                    "Authentication": f"bearer {os.getenv('TN_ACCESS_TOKEN', '')}",
+                    "User-Agent": "Klank-Agent/1.0",
+                },
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                results["tiendanube"] = {
+                    "status": "✅ conectado",
+                    "store": data.get("name", {}).get("es", ""),
+                    "store_id": TN_STORE_ID,
+                }
+            else:
+                results["tiendanube"] = {"status": f"❌ error {resp.status_code}"}
+    except Exception as e:
+        results["tiendanube"] = {"status": f"❌ {str(e)}"}
+
+    # Test búsqueda real
+    try:
+        search_result = await search_products("juguete")
+        results["busqueda_test"] = {
+            "status": "✅ ok",
+            "fuente": search_result.get("source"),
+            "productos_encontrados": len(search_result.get("products", [])),
+        }
+    except Exception as e:
+        results["busqueda_test"] = {"status": f"❌ {str(e)}"}
+
+    return results
+
+
 # ─── OAuth callback MercadoLibre (solo para setup inicial) ───────────────────
 
 @app.get("/auth/callback")
