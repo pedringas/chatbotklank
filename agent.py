@@ -227,7 +227,16 @@ async def process_message(phone_number: str, message: str) -> str:
                     lines.append(
                         f"- {p['title']} | Precio: ${p['price']} | Stock: {p['stock']} | {p['permalink']}"
                     )
-                stock_context = "\n[Resultados de búsqueda de stock]\n" + "\n".join(lines)
+                stock_context = (
+                    "\n[Resultados reales de búsqueda en MercadoLibre]\n"
+                    + "\n".join(lines)
+                    + "\n[IMPORTANTE: Solo mencioná estos productos. No inventes otros ni generes links propios. Si no hay resultados, decí que no encontraste nada.]"
+                )
+            else:
+                stock_context = (
+                    "\n[Búsqueda en MercadoLibre: sin resultados para este producto]"
+                    "\n[IMPORTANTE: No inventes productos ni links. Decí honestamente que no encontraste ese producto en este momento.]"
+                )
 
     user_content = message + stock_context
 
