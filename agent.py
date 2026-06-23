@@ -6,10 +6,11 @@ Orquesta LLM, tools de stock, historial de conversación y base de conocimiento.
 import logging
 import os
 import glob
+import re
 from openai import AsyncOpenAI
 from config import OPENAI_API_KEY
 from memory import get_history, save_message
-from tools import search_products
+from tools import search_products, get_product_by_id_ml
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +188,22 @@ def _is_product_query(message: str) -> bool:
     return bool(PRODUCT_KEYWORDS.intersection(words))
 
 
+def _extract_ml_item_id(message: str) -> str | None:
+    """
+    Extrae el item ID de una URL de MercadoLibre si el mensaje contiene una.
+    Soporta formatos: wid=MLA123, /MLA123, /p/MLA123
+    """
+    # Buscar wid=MLA... (el más común en URLs de catálogo)
+    m = re.search(r"wid=(MLA\d+)", message)
+    if m:
+        return m.group(1)
+    # Buscar /MLA... directo en la URL
+    m = re.search(r"/(MLA\d+)", message)
+    if m:
+        return m.group(1)
+    return None
+
+
 async def _extract_search_query(message: str) -> str:
     """
     Usa GPT para extraer el nombre del producto que busca el cliente.
@@ -229,7 +246,23 @@ async def process_message(phone_number: str, message: str) -> str:
 
     # Contexto adicional de stock si el mensaje lo requiere
     stock_context = ""
-    if _is_product_query(message):
+
+    # Caso 1: el cliente compartió una URL de MercadoLibre
+    ml_item_id = _extract_ml_item_id(message)
+    if ml_item_id:
+        product = await get_product_by_id_ml(ml_item_id)
+        if "error" not in product:
+            stock_context = (
+                f"\n[Producto de MercadoLibre consultado directamente]\n"
+                f"- {product['title']} | Precio: ${product['price']} | Stock: {product['stock']} | {product['permalink']}\n"
+                f"[IMPORTANTE: Informá si ese producto específico tiene stock en Klank según el dato de arriba. "
+                f"Si stock es 0 o None, no lo tenemos. Ofrecé alternativas de nuestra tienda si las hay.]"
+            )
+        else:
+            stock_context = "\n[No se pudo consultar ese producto de ML. Informá al cliente que no pudiste verificar ese item específico.]"
+
+    # Caso 2: consulta de texto por producto
+    elif _is_product_query(message):
         search_query = await _extract_search_query(message)
         if search_query:
             result = await search_products(search_query)
