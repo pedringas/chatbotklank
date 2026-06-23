@@ -76,7 +76,8 @@ async def search_mercadolibre(query: str) -> dict:
                 resp.raise_for_status()
                 data = resp.json()
 
-            item_ids = [r["id"] for r in data.get("results", [])[:5]]
+            results_raw = data.get("results", [])
+            item_ids = [r["id"] for r in results_raw[:5] if isinstance(r, dict) and "id" in r]
             if not item_ids:
                 return await search_tiendanube(query)
 
@@ -132,7 +133,7 @@ async def search_tiendanube(query: str) -> dict:
         "Authentication": f"bearer {tn_token}",
         "User-Agent": "Klank-Agent/1.0",
     }
-    params = {"q": query, "fields": "name,variants,permalink,images,canonical_url", "per_page": 5}
+    params = {"q": query, "per_page": 5}
 
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
