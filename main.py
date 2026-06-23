@@ -214,7 +214,9 @@ async def ml_oauth_callback(request: Request):
         return JSONResponse({"error": "No se recibió code de ML"}, status_code=400)
 
     ml_app_id = os.getenv("ML_APP_ID", "")
-    redirect_uri = str(request.base_url) + "auth/callback"
+    # Railway genera base_url como http:// internamente — forzamos https para que coincida con ML
+    base = str(request.base_url).replace("http://", "https://").rstrip("/")
+    redirect_uri = f"{base}/auth/callback"
 
     client_secret = os.getenv("ML_CLIENT_SECRET", "")
     if not client_secret:
