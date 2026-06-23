@@ -177,10 +177,37 @@ def _is_product_query(message: str) -> bool:
     return bool(PRODUCT_KEYWORDS.intersection(words))
 
 
+async def _extract_search_query(message: str) -> str:
+    """
+    Usa GPT para extraer el nombre del producto que busca el cliente.
+    Retorna 1-4 palabras clave para buscar en ML/TN, o string vacío si no es consulta de producto.
+    """
+    try:
+        completion = await _openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Extraé el nombre del producto que busca el cliente en 1-4 palabras clave "
+                        "para buscar en MercadoLibre. Solo devolvé las palabras clave, sin explicación. "
+                        "Si el mensaje no es una consulta de producto, devolvé vacío."
+                    ),
+                },
+                {"role": "user", "content": message},
+            ],
+            max_tokens=20,
+            temperature=0,
+        )
+        return completion.choices[0].message.content.strip()
+    except Exception:
+        return message
+
+
 async def process_message(phone_number: str, message: str) -> str:
     """
     Procesa un mensaje entrante y retorna la respuesta del agente.
-    Flujo: historial → knowledge → búsqueda de stock (si aplica) → LLM → guardar → responder.
+    Flujo: historial → knowledge → extracción de query → búsqueda de stock → LLM → guardar → responder.
     """
     history = await get_history(phone_number, limit=10)
 
@@ -190,15 +217,17 @@ async def process_message(phone_number: str, message: str) -> str:
     # Contexto adicional de stock si el mensaje lo requiere
     stock_context = ""
     if _is_product_query(message):
-        result = await search_mercadolibre(message)
-        products = result.get("products", [])
-        if products:
-            lines = []
-            for p in products[:2]:
-                lines.append(
-                    f"- {p['title']} | Precio: ${p['price']} | Stock: {p['stock']} | {p['permalink']}"
-                )
-            stock_context = "\n[Resultados de búsqueda de stock]\n" + "\n".join(lines)
+        search_query = await _extract_search_query(message)
+        if search_query:
+            result = await search_mercadolibre(search_query)
+            products = result.get("products", [])
+            if products:
+                lines = []
+                for p in products[:2]:
+                    lines.append(
+                        f"- {p['title']} | Precio: ${p['price']} | Stock: {p['stock']} | {p['permalink']}"
+                    )
+                stock_context = "\n[Resultados de búsqueda de stock]\n" + "\n".join(lines)
 
     user_content = message + stock_context
 
