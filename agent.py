@@ -190,18 +190,37 @@ def _is_product_query(message: str) -> bool:
 
 def _extract_ml_item_id(message: str) -> str | None:
     """
-    Extrae el item ID de una URL de MercadoLibre si el mensaje contiene una.
-    Soporta formatos: wid=MLA123, /MLA123, /p/MLA123
+    Extrae el item ID individual de una URL de MercadoLibre.
+    Solo retorna IDs de publicaciones reales (MLA + solo números).
+    Las URLs de catálogo (MLAU...) no son consultables via API.
     """
-    # Buscar wid=MLA... (el más común en URLs de catálogo)
+    if "mercadolibre" not in message.lower():
+        return None
+    # wid=MLA... seguido solo de dígitos (publicación real)
     m = re.search(r"wid=(MLA\d+)", message)
     if m:
         return m.group(1)
-    # Buscar /MLA... directo en la URL
+    # /MLA seguido solo de dígitos en la URL
     m = re.search(r"/(MLA\d+)", message)
     if m:
         return m.group(1)
     return None
+
+
+def _extract_ml_product_name(message: str) -> str | None:
+    """
+    Extrae el nombre del producto desde una URL de ML tipo catálogo (/up/MLAU...).
+    Convierte el slug de la URL en palabras clave para buscar.
+    """
+    m = re.search(r"mercadolibre\.com\.ar/([^/?#]+)", message)
+    if not m:
+        return None
+    slug = m.group(1)
+    # Convertir guiones en espacios y limpiar números y códigos al final
+    words = slug.replace("-", " ").split()
+    # Filtrar palabras muy cortas o que sean solo números
+    keywords = [w for w in words if len(w) > 2 and not w.isdigit()]
+    return " ".join(keywords[:4]) if keywords else None
 
 
 async def _extract_search_query(message: str) -> str:
@@ -249,7 +268,31 @@ async def process_message(phone_number: str, message: str) -> str:
 
     # Caso 1: el cliente compartió una URL de MercadoLibre
     ml_item_id = _extract_ml_item_id(message)
-    if ml_item_id:
+    ml_product_name = None if ml_item_id else _extract_ml_product_name(message)
+
+    if ml_product_name and not ml_item_id:
+        # URL de catálogo — buscar por nombre extraído del slug
+        result = await search_products(ml_product_name)
+        products = result.get("products", [])
+        source = result.get("source", "tiendanube")
+        source_label = "Tienda Nube (tienda propia)" if source == "tiendanube" else "MercadoLibre"
+        if products:
+            lines = [
+                f"- {p['title']} | Precio: ${p['price']} | Stock: {p['stock']} | {p['permalink']}"
+                for p in products[:2]
+            ]
+            stock_context = (
+                f"\n[El cliente compartió una URL de ML. Buscamos ese producto en {source_label}]\n"
+                + "\n".join(lines)
+                + "\n[IMPORTANTE: Aclará que consultaste en nuestra tienda y ML, y mostrá los resultados con links exactos.]"
+            )
+        else:
+            stock_context = (
+                "\n[El cliente compartió una URL de ML. No encontramos ese producto exacto en nuestra tienda ni en ML.]"
+                "\n[IMPORTANTE: Informá que no tenemos ese artículo pero ofrecé buscar algo similar si el cliente quiere.]"
+            )
+
+    elif ml_item_id:
         product = await get_product_by_id_ml(ml_item_id)
         if "error" not in product:
             stock_context = (
