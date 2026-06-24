@@ -97,13 +97,20 @@ async def _handle_webhook(body: dict) -> None:
 
                 logger.info("Mensaje recibido de %s: %s", phone, text[:60])
 
-                # Mandar "buscando..." solo si hay una búsqueda real de stock o URL de ML
+                # Mandar "buscando..." solo si hay una búsqueda real de stock o URL, nunca en saludos puros
                 from agent import _extract_ml_item_id, _extract_ml_product_name, _extract_klank_product_name
-                needs_search = (
+                _text_lower = text.lower().strip()
+                _is_greeting_only = _text_lower in {
+                    "hola", "buenas", "buen dia", "buen día", "buenos dias", "buenos días",
+                    "buenas tardes", "buenas noches", "hi", "hello", "hey",
+                    "si", "sí", "no", "ok", "dale", "gracias", "perfecto", "genial",
+                }
+                needs_search = not _is_greeting_only and (
                     _is_product_query(text)
                     or _extract_ml_item_id(text) is not None
                     or _extract_ml_product_name(text) is not None
                     or _extract_klank_product_name(text) is not None
+                    or len(text.split()) <= 6  # mensajes cortos probablemente son consultas de producto
                 )
                 if needs_search:
                     await send_whatsapp_message(phone, "Dejame buscar un momento 🔍")
@@ -327,6 +334,13 @@ async def tn_oauth_callback(request: Request):
 @app.post("/tn/customers-redact")
 @app.post("/tn/customers-data")
 async def tn_privacy(_: Request):
+    return JSONResponse({"status": "ok"})
+
+
+# ─── Webhook de Chatwoot (notificaciones entrantes) ──────────────────────────
+
+@app.post("/notifications")
+async def chatwoot_notifications(_: Request):
     return JSONResponse({"status": "ok"})
 
 

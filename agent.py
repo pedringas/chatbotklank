@@ -342,8 +342,8 @@ async def process_message(phone_number: str, message: str) -> str:
         else:
             stock_context = "\n[No se pudo consultar ese producto de ML. Informá al cliente que no pudiste verificar ese item específico.]"
 
-    # Caso 2: consulta de texto por producto
-    elif _is_product_query(message):
+    # Caso 2: consulta de texto por producto (siempre intentar — GPT decide si es producto)
+    else:
         search_query = await _extract_search_query(message)
         if search_query:
             logger.info("Buscando en tiendas: '%s'", search_query)
