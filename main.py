@@ -97,8 +97,9 @@ async def _handle_webhook(body: dict) -> None:
 
                 logger.info("Mensaje recibido de %s: %s", phone, text[:60])
 
-                # Mandar "buscando..." solo si hay una búsqueda real de stock o URL, nunca en saludos puros
+                # Mandar "buscando..." solo si hay una búsqueda real de stock o URL, nunca en saludos
                 from agent import _extract_ml_item_id, _extract_ml_product_name, _extract_klank_product_name
+                from memory import get_history as _get_history
                 _text_lower = text.lower().strip()
                 _greeting_prefixes = ("hola", "buenas", "buen", "buenos", "hi ", "hello", "hey")
                 _skip_words = {
@@ -107,8 +108,11 @@ async def _handle_webhook(body: dict) -> None:
                     "si", "sí", "no", "ok", "dale", "gracias", "perfecto", "genial",
                 }
                 _correction_starts = ("no,", "no ", "ese no", "eso no", "pero", "tampoco", "incorrecto")
+                _history = await _get_history(phone, limit=1)
+                _is_first_message = len(_history) == 0
                 _is_skip = (
-                    _text_lower in _skip_words
+                    _is_first_message  # primer mensaje: siempre saludar primero sin "buscando"
+                    or _text_lower in _skip_words
                     or any(_text_lower.startswith(g) for g in _greeting_prefixes)
                     or _text_lower.startswith(_correction_starts)
                     or "no es el precio" in _text_lower
