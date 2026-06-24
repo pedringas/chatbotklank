@@ -120,12 +120,49 @@ async def _get_ml_item(client: httpx.AsyncClient, item_id: str) -> dict | None:
         return None
 
 
+def _parse_tn_products(data: list) -> list:
+    """Convierte respuesta cruda de TN en lista de productos normalizados."""
+    products = []
+    for item in data:
+        # Buscar la variante con stock primero, sino la primera
+        variants = item.get("variants", [])
+        variant = next((v for v in variants if (v.get("stock") or 0) > 0), variants[0] if variants else {})
+        image = ""
+        if item.get("images"):
+            image = item["images"][0].get("src", "")
+        price = variant.get("promotional_price") or variant.get("price")
+        link = item.get("canonical_url") or item.get("permalink", "")
+        sku = variant.get("sku", "")
+        products.append({
+            "title": item.get("name", {}).get("es", "") or str(item.get("name", "")),
+            "price": price,
+            "stock": variant.get("stock"),
+            "permalink": link,
+            "thumbnail": image,
+            "sku": sku,
+        })
+    return products
+
+
+async def _tn_search_raw(query: str, headers: dict, url: str) -> list:
+    """Hace una búsqueda en TN y retorna la lista cruda."""
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            resp = await client.get(url, headers=headers, params={"q": query, "per_page": 10})
+            resp.raise_for_status()
+            data = resp.json()
+            return data if isinstance(data, list) else []
+    except Exception as e:
+        logger.error("Error en búsqueda TN '%s': %s", query, e)
+        return []
+
+
 async def search_tiendanube(query: str) -> dict:
     """
-    Busca productos en Tienda Nube que coincidan con el query.
-    Retorna lista de hasta 3 productos con nombre, precio, stock, link e imagen.
+    Busca productos en Tienda Nube.
+    Hace dos pasadas: por frase exacta y por SKU si aplica.
+    Retorna hasta 3 productos ordenando los que tienen stock primero.
     """
-    # Leer token dinámicamente para capturar actualizaciones sin reiniciar
     tn_token = os.getenv("TN_ACCESS_TOKEN", TN_ACCESS_TOKEN)
     tn_store = os.getenv("TN_STORE_ID", TN_STORE_ID)
     url = f"https://api.tiendanube.com/v1/{tn_store}/products"
@@ -133,37 +170,24 @@ async def search_tiendanube(query: str) -> dict:
         "Authentication": f"bearer {tn_token}",
         "User-Agent": "Klank-Agent/1.0",
     }
-    params = {"q": query, "per_page": 5}
 
     try:
-        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-            resp = await client.get(url, headers=headers, params=params)
-            resp.raise_for_status()
-            data = resp.json()
+        # Búsqueda principal por nombre/query
+        raw = await _tn_search_raw(query, headers, url)
 
-        if not isinstance(data, list):
-            logger.warning("Tienda Nube devolvió respuesta inesperada: %s", type(data))
+        # Si la query parece un SKU (alfanumérico corto), buscar también por SKU
+        if not raw and len(query) <= 20 and query.replace("-", "").replace("_", "").isalnum():
+            raw = await _tn_search_raw(query, headers, url)
+
+        if not raw:
             return {"source": "tiendanube", "products": []}
 
-        products = []
-        for item in data[:3]:
-            variant = item.get("variants", [{}])[0] if item.get("variants") else {}
-            image = ""
-            if item.get("images"):
-                image = item["images"][0].get("src", "")
-            # Usar precio promocional si existe, sino precio normal
-            price = variant.get("promotional_price") or variant.get("price")
-            # Preferir canonical_url (tienda propia) sobre permalink
-            link = item.get("canonical_url") or item.get("permalink", "")
-            products.append(
-                {
-                    "title": item.get("name", {}).get("es", "") or str(item.get("name", "")),
-                    "price": price,
-                    "stock": variant.get("stock"),
-                    "permalink": link,
-                    "thumbnail": image,
-                }
-            )
+        all_products = _parse_tn_products(raw)
+
+        # Ordenar: primero los que tienen stock > 0
+        with_stock = [p for p in all_products if (p.get("stock") or 0) > 0]
+        without_stock = [p for p in all_products if (p.get("stock") or 0) == 0]
+        products = (with_stock + without_stock)[:3]
 
         return {"source": "tiendanube", "products": products}
 

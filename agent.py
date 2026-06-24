@@ -320,17 +320,20 @@ async def process_message(phone_number: str, message: str) -> str:
             source_label = "Tienda Nube (tienda propia)" if source == "tiendanube" else "MercadoLibre"
             if products:
                 lines = []
-                for p in products[:2]:
+                for p in products[:3]:
+                    stock_val = p.get("stock")
+                    stock_str = f"{stock_val} unidades" if stock_val and int(stock_val) > 0 else "SIN STOCK"
+                    sku_str = f" | SKU: {p['sku']}" if p.get("sku") else ""
                     lines.append(
-                        f"- {p['title']} | Precio: ${p['price']} | Stock: {p['stock']} | {p['permalink']}"
+                        f"- {p['title']}{sku_str} | Precio: ${p['price']} | Stock: {stock_str} | {p['permalink']}"
                     )
                 stock_context = (
-                    f"\n[Resultados reales de búsqueda en {source_label}]\n"
+                    f"\n[Resultados verificados en {source_label} para '{search_query}']\n"
                     + "\n".join(lines)
-                    + "\n[IMPORTANTE: El campo Stock muestra las unidades exactas disponibles. "
-                    "Usá ese número si te preguntan por cantidad. "
-                    "Solo mencioná estos productos con sus precios y links exactos. No inventes otros ni generes links propios. "
-                    "NUNCA prometás avisar cuando vuelva el stock — no tenés esa capacidad.]"
+                    + "\n[IMPORTANTE: Solo los productos marcados con stock > 0 están disponibles. "
+                    "Usá el número exacto de unidades si te preguntan por cantidad. "
+                    "Usá precios y links exactos — no inventes ni modifiques. "
+                    "NUNCA prometás avisar cuando vuelva el stock.]"
                 )
             else:
                 stock_context = (
