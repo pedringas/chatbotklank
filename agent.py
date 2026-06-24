@@ -40,6 +40,8 @@ Adaptás tu registro al cliente que tenés enfrente:
 - Nunca usés tuteo francés ("tú") ni expresiones de otros países. Siempre español rioplatense
 - Máximo 1 emoji por mensaje. Solo si suma al tono, nunca decorativo
 - Nunca uses asteriscos, guiones, ni formato markdown. WhatsApp no los renderiza
+- Nunca uses links con formato markdown tipo [texto](url) — solo pegá la URL desnuda
+- Nunca uses "..." ni puntos suspensivos en tus respuestas
 - Respuestas cortas y directas. Máximo 4 líneas por mensaje salvo que el cliente necesite más detalle
 - Si el cliente saluda ("hola", "buenas", "buen día") → respondés el saludo antes de responder la consulta. Ejemplo: "Hola, ¿cómo estás? Dejame buscar eso."
 - Nunca empezás con "¡Hola!" si ya venís en conversación sin saludo previo del cliente
@@ -219,11 +221,23 @@ def _extract_ml_product_name(message: str) -> str | None:
     if not m:
         return None
     slug = m.group(1)
-    # Convertir guiones en espacios y limpiar números y códigos al final
     words = slug.replace("-", " ").split()
-    # Filtrar palabras muy cortas o que sean solo números
     keywords = [w for w in words if len(w) > 2 and not w.isdigit()]
     return " ".join(keywords[:4]) if keywords else None
+
+
+def _extract_klank_product_name(message: str) -> str | None:
+    """
+    Extrae el nombre del producto desde una URL de klank.com.ar.
+    Convierte el slug en palabras clave para buscar en TN.
+    """
+    m = re.search(r"klank\.com\.ar/productos/([^/?#]+)", message)
+    if not m:
+        return None
+    slug = m.group(1).rstrip("/")
+    words = slug.replace("-", " ").split()
+    keywords = [w for w in words if len(w) > 2 and not w.isdigit()]
+    return " ".join(keywords[:5]) if keywords else None
 
 
 async def _extract_search_query(message: str) -> str:
@@ -271,7 +285,26 @@ async def process_message(phone_number: str, message: str) -> str:
 
     # Caso 1: el cliente compartió una URL de MercadoLibre
     ml_item_id = _extract_ml_item_id(message)
-    ml_product_name = None if ml_item_id else _extract_ml_product_name(message)
+    klank_product_name = _extract_klank_product_name(message)
+    ml_product_name = None if (ml_item_id or klank_product_name) else _extract_ml_product_name(message)
+
+    # Caso 0: el cliente compartió una URL de klank.com.ar — buscar ese producto en TN
+    if klank_product_name and not ml_item_id:
+        result = await search_products(klank_product_name)
+        products = result.get("products", [])
+        if products:
+            lines = []
+            for p in products[:2]:
+                stock_val = p.get("stock")
+                stock_str = f"{stock_val} unidades" if stock_val and int(stock_val) > 0 else "SIN STOCK"
+                lines.append(f"- {p['title']} | Precio: ${p['price']} | Stock: {stock_str} | {p['permalink']}")
+            stock_context = (
+                "\n[El cliente compartió una URL de nuestra tienda. Resultado verificado en Tienda Nube]\n"
+                + "\n".join(lines)
+                + "\n[IMPORTANTE: Usá precios y stock exactos. No uses markdown en los links — solo la URL desnuda.]"
+            )
+        else:
+            stock_context = "\n[No encontramos ese producto en nuestra tienda en este momento.]"
 
     if ml_product_name and not ml_item_id:
         # URL de catálogo — buscar por nombre extraído del slug

@@ -97,8 +97,15 @@ async def _handle_webhook(body: dict) -> None:
 
                 logger.info("Mensaje recibido de %s: %s", phone, text[:60])
 
-                # Mandar mensaje de "buscando..." solo si es consulta de producto
-                if _is_product_query(text):
+                # Mandar "buscando..." solo si hay una búsqueda real de stock o URL de ML
+                from agent import _extract_ml_item_id, _extract_ml_product_name, _extract_klank_product_name
+                needs_search = (
+                    _is_product_query(text)
+                    or _extract_ml_item_id(text) is not None
+                    or _extract_ml_product_name(text) is not None
+                    or _extract_klank_product_name(text) is not None
+                )
+                if needs_search:
                     await send_whatsapp_message(phone, "Dejame buscar un momento 🔍")
 
                 response = await process_message(phone, text)
