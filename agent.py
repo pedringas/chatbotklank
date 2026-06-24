@@ -252,12 +252,15 @@ async def _extract_search_query(message: str) -> str:
                 {
                     "role": "system",
                     "content": (
-                        "Extraé el nombre genérico del producto que busca el cliente en 1-2 palabras clave "
-                        "para buscar en una tienda. Usá el término más simple y genérico posible. "
-                        "Ejemplos: 'cocina gigante de juguete' → 'cocina', 'pelota sensorial 15cm' → 'pelota sensorial', "
-                        "'funkopop spiderman' → 'funko spiderman'. "
+                        "Extraé el nombre específico del producto que busca el cliente en 2-3 palabras clave "
+                        "para buscar en una tienda de juguetes argentina. "
+                        "Incluí el adjetivo principal que lo diferencia (gigante, sensorial, magnético, etc). "
+                        "Ejemplos: 'cocina gigante de juguete fiorella' → 'cocina gigante fiorella', "
+                        "'pelota sensorial 15cm' → 'pelota sensorial', "
+                        "'funkopop spiderman' → 'funko spiderman', "
+                        "'estoy buscando algo para regalar' → '' (vacío, no es consulta específica). "
                         "Solo devolvé las palabras clave, sin explicación. "
-                        "Si el mensaje no es una consulta de producto, devolvé vacío."
+                        "Si el mensaje no es una consulta de producto específico, devolvé vacío."
                     ),
                 },
                 {"role": "user", "content": message},
@@ -283,13 +286,12 @@ async def process_message(phone_number: str, message: str) -> str:
     # Contexto adicional de stock si el mensaje lo requiere
     stock_context = ""
 
-    # Caso 1: el cliente compartió una URL de MercadoLibre
     ml_item_id = _extract_ml_item_id(message)
     klank_product_name = _extract_klank_product_name(message)
     ml_product_name = None if (ml_item_id or klank_product_name) else _extract_ml_product_name(message)
 
-    # Caso 0: el cliente compartió una URL de klank.com.ar — buscar ese producto en TN
-    if klank_product_name and not ml_item_id:
+    if klank_product_name:
+        # Cliente compartió URL de nuestra tienda — buscar ese producto en TN
         result = await search_products(klank_product_name)
         products = result.get("products", [])
         if products:
@@ -306,8 +308,20 @@ async def process_message(phone_number: str, message: str) -> str:
         else:
             stock_context = "\n[No encontramos ese producto en nuestra tienda en este momento.]"
 
-    if ml_product_name and not ml_item_id:
-        # URL de catálogo — buscar por nombre extraído del slug
+    elif ml_item_id:
+        product = await get_product_by_id_ml(ml_item_id)
+        if "error" not in product:
+            stock_context = (
+                f"\n[Producto de MercadoLibre consultado directamente]\n"
+                f"- {product['title']} | Precio: ${product['price']} | Stock: {product['stock']} | {product['permalink']}\n"
+                f"[IMPORTANTE: Informá si ese producto específico tiene stock en Klank según el dato de arriba. "
+                f"Si stock es 0 o None, no lo tenemos. Ofrecé alternativas de nuestra tienda si las hay.]"
+            )
+        else:
+            stock_context = "\n[No se pudo consultar ese producto de ML. Informá al cliente que no pudiste verificar ese item específico.]"
+
+    elif ml_product_name:
+        # URL de catálogo ML — buscar por nombre extraído del slug
         result = await search_products(ml_product_name)
         products = result.get("products", [])
         source = result.get("source", "tiendanube")
@@ -330,20 +344,8 @@ async def process_message(phone_number: str, message: str) -> str:
                 "\n[IMPORTANTE: Informá que no tenemos ese artículo pero ofrecé buscar algo similar si el cliente quiere.]"
             )
 
-    elif ml_item_id:
-        product = await get_product_by_id_ml(ml_item_id)
-        if "error" not in product:
-            stock_context = (
-                f"\n[Producto de MercadoLibre consultado directamente]\n"
-                f"- {product['title']} | Precio: ${product['price']} | Stock: {product['stock']} | {product['permalink']}\n"
-                f"[IMPORTANTE: Informá si ese producto específico tiene stock en Klank según el dato de arriba. "
-                f"Si stock es 0 o None, no lo tenemos. Ofrecé alternativas de nuestra tienda si las hay.]"
-            )
-        else:
-            stock_context = "\n[No se pudo consultar ese producto de ML. Informá al cliente que no pudiste verificar ese item específico.]"
-
-    # Caso 2: consulta de texto por producto (siempre intentar — GPT decide si es producto)
     else:
+        # Consulta de texto — GPT extrae el término, si devuelve vacío no es consulta de producto
         search_query = await _extract_search_query(message)
         if search_query:
             logger.info("Buscando en tiendas: '%s'", search_query)
