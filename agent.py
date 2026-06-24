@@ -10,7 +10,7 @@ import re
 from openai import AsyncOpenAI
 from config import OPENAI_API_KEY
 from memory import get_history, save_message
-from tools import search_products, get_product_by_id_ml
+from tools import search_products, get_product_by_id_ml, search_mercadolibre
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +193,12 @@ def _is_product_query(message: str) -> bool:
     return bool(PRODUCT_KEYWORDS.intersection(words))
 
 
+def _is_ml_query(message: str) -> bool:
+    """Detecta si el cliente pregunta por disponibilidad en MercadoLibre."""
+    lower = message.lower()
+    return any(kw in lower for kw in ("mercadolibre", "mercado libre", " ml ", "en ml", "en meli", "meli"))
+
+
 def _extract_ml_item_id(message: str) -> str | None:
     """
     Extrae el item ID individual de una URL de MercadoLibre.
@@ -289,8 +295,41 @@ async def process_message(phone_number: str, message: str) -> str:
     ml_item_id = _extract_ml_item_id(message)
     klank_product_name = _extract_klank_product_name(message)
     ml_product_name = None if (ml_item_id or klank_product_name) else _extract_ml_product_name(message)
+    asks_ml = _is_ml_query(message)
 
-    if klank_product_name:
+    if asks_ml and not ml_item_id and not ml_product_name:
+        # El cliente pregunta por ML — extraer el producto del mensaje o del historial
+        search_query = await _extract_search_query(message)
+        if not search_query:
+            # Intentar extraer del último mensaje del historial donde se mencionó un producto
+            for turn in reversed(history):
+                q = await _extract_search_query(turn["content"])
+                if q:
+                    search_query = q
+                    break
+        if search_query:
+            logger.info("Buscando en MercadoLibre: '%s'", search_query)
+            result = await search_mercadolibre(search_query)
+            products = result.get("products", [])
+            if products:
+                lines = []
+                for p in products[:3]:
+                    stock_val = p.get("stock")
+                    stock_str = f"{stock_val} unidades" if stock_val and int(stock_val) > 0 else "SIN STOCK"
+                    lines.append(f"- {p['title']} | Precio: ${p['price']} | Stock: {stock_str} | {p['permalink']}")
+                stock_context = (
+                    f"\n[Resultados verificados en MercadoLibre para '{search_query}']\n"
+                    + "\n".join(lines)
+                    + "\n[IMPORTANTE: Estos son los resultados reales de nuestra tienda en ML. "
+                    "Usá precios, stock y links exactos. No inventes ni modifiques información.]"
+                )
+            else:
+                stock_context = (
+                    f"\n[Búsqueda en MercadoLibre para '{search_query}': sin resultados en nuestra tienda de ML]"
+                    "\n[IMPORTANTE: Informá honestamente que no encontraste ese producto en nuestra tienda de ML.]"
+                )
+
+    elif klank_product_name:
         # Cliente compartió URL de nuestra tienda — buscar ese producto en TN
         result = await search_products(klank_product_name)
         products = result.get("products", [])
