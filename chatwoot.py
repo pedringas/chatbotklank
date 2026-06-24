@@ -56,7 +56,13 @@ async def create_or_get_contact(phone_number: str) -> str | None:
                 json={"phone_number": f"+{phone_number}", "name": phone_number},
             )
             create.raise_for_status()
-            return str(create.json()["id"])
+            create_data = create.json()
+            contact_id = (
+                create_data.get("id")
+                or (create_data.get("payload") or {}).get("id")
+                or (create_data.get("contact") or {}).get("id")
+            )
+            return str(contact_id) if contact_id else None
 
     except Exception as e:
         logger.error("Error en create_or_get_contact para %s: %s", phone_number, e)
