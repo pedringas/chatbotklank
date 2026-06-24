@@ -130,11 +130,17 @@ def _parse_tn_products(data: list) -> list:
         image = ""
         if item.get("images"):
             image = item["images"][0].get("src", "")
-        price = variant.get("promotional_price") or variant.get("price")
+        # Usar precio real (price); solo usar promotional_price si es menor (descuento activo)
+        price = variant.get("price")
+        promo = variant.get("promotional_price")
+        if promo and price and float(promo) < float(price):
+            price = promo
         link = item.get("canonical_url") or item.get("permalink", "")
         sku = variant.get("sku", "")
+        title = item.get("name", {}).get("es", "") or str(item.get("name", ""))
+        logger.info("TN producto: '%s' | precio=%s | stock=%s", title, price, variant.get("stock"))
         products.append({
-            "title": item.get("name", {}).get("es", "") or str(item.get("name", "")),
+            "title": title,
             "price": price,
             "stock": variant.get("stock"),
             "permalink": link,
