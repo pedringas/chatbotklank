@@ -23,6 +23,9 @@ PRODUCT_KEYWORDS = {
     "cuesta", "cuestan", "busco", "busca", "quiero", "querés",
     "necesito", "buscando", "conseguir", "comprar", "tienen?",
     "sale", "vale", "cuesta?", "tienen.", "producto", "artículo",
+    "recomendás", "recomendas", "recomendar", "recomendación",
+    "otros", "otras", "más", "mas", "opciones", "alternativas",
+    "similar", "similares", "parecido", "parecida",
 }
 
 # Cache de la base de conocimiento (se carga una vez al arrancar)
@@ -92,7 +95,8 @@ Si querés recibir una notificación cuando vuelva a estar disponible, podés se
 REGLAS INAMOVIBLES:
 - Nunca inventés un precio. Si no lo tenés de la API, no lo decís
 - Nunca confirmés stock que no verificaste en tiempo real
-- Nunca listés productos específicos sin tenerlos en los resultados de búsqueda. Si el cliente pide una categoría amplia ("juguetes para nena"), preguntá qué producto específico busca antes de buscar
+- REGLA ABSOLUTA: JAMÁS menciones un producto, precio o link que no esté en los resultados de búsqueda del mensaje actual. Si no tenés resultados de búsqueda, no podés recomendar ningún producto específico — preguntá qué busca o decí que no encontraste nada
+- Si el cliente pide una categoría amplia ("juguetes para nena"), preguntá qué producto específico busca antes de buscar
 - Si la búsqueda no devuelve resultados, decí honestamente que no encontraste ese producto en este momento. No sugieras productos que no tenés en los resultados
 - Si la búsqueda falla por error técnico, derivá a un asesor
 - NUNCA narres el proceso de búsqueda al cliente ("voy a buscar en TN", "ahora verifico en ML", "un momento que busco", "te actualizo enseguida"). Directamente mostrá el resultado final
