@@ -100,17 +100,16 @@ async def _handle_webhook(body: dict) -> None:
                 # Mandar "buscando..." solo si hay una búsqueda real de stock o URL, nunca en saludos puros
                 from agent import _extract_ml_item_id, _extract_ml_product_name, _extract_klank_product_name
                 _text_lower = text.lower().strip()
-                _greeting_words = {"hola", "buenas", "buen", "buenos", "hi", "hello", "hey"}
+                _greeting_prefixes = ("hola", "buenas", "buen", "buenos", "hi ", "hello", "hey")
                 _skip_words = {
                     "hola", "buenas", "buen dia", "buen día", "buenos dias", "buenos días",
                     "buenas tardes", "buenas noches", "hi", "hello", "hey",
                     "si", "sí", "no", "ok", "dale", "gracias", "perfecto", "genial",
                 }
                 _correction_starts = ("no,", "no ", "ese no", "eso no", "pero", "tampoco", "incorrecto")
-                _first_word = _text_lower.split()[0] if _text_lower.split() else ""
                 _is_skip = (
                     _text_lower in _skip_words
-                    or _first_word in _greeting_words
+                    or any(_text_lower.startswith(g) for g in _greeting_prefixes)
                     or _text_lower.startswith(_correction_starts)
                     or "no es el precio" in _text_lower
                     or "precio es" in _text_lower
