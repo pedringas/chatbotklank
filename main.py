@@ -125,8 +125,7 @@ async def _handle_webhook(body: dict) -> None:
                     or _extract_ml_product_name(text) is not None
                     or _extract_klank_product_name(text) is not None
                 )
-                if needs_search:
-                    await send_whatsapp_message(phone, "Dejame buscar un momento 🔍")
+                # Sin mensaje de espera — el bot responde directamente cuando termina la búsqueda
 
                 response = await process_message(phone, text)
                 await send_whatsapp_message(phone, response)
