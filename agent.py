@@ -259,15 +259,17 @@ async def _extract_search_query(message: str) -> str:
                 {
                     "role": "system",
                     "content": (
-                        "Extraé el nombre específico del producto que busca el cliente en 2-3 palabras clave "
+                        "Extraé el nombre del producto o categoría que busca el cliente en 2-3 palabras clave "
                         "para buscar en una tienda de juguetes argentina. "
-                        "Incluí el adjetivo principal que lo diferencia (gigante, sensorial, magnético, etc). "
+                        "Incluí el adjetivo principal o marca/personaje que lo diferencia. "
                         "Ejemplos: 'cocina gigante de juguete fiorella' → 'cocina gigante fiorella', "
                         "'pelota sensorial 15cm' → 'pelota sensorial', "
                         "'funkopop spiderman' → 'funko spiderman', "
-                        "'estoy buscando algo para regalar' → '' (vacío, no es consulta específica). "
+                        "'peluches de toy story' → 'peluche toy story', "
+                        "'stock de productos de frozen' → 'frozen', "
+                        "'estoy buscando algo para regalar' → '' (vacío, demasiado vago). "
                         "Solo devolvé las palabras clave, sin explicación. "
-                        "Si el mensaje no es una consulta de producto específico, devolvé vacío."
+                        "Si el mensaje no menciona ningún producto, categoría o personaje, devolvé vacío."
                     ),
                 },
                 {"role": "user", "content": message},

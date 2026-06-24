@@ -40,7 +40,13 @@ async def create_or_get_contact(phone_number: str) -> str | None:
                 params={"q": phone_number, "include_contacts": True},
             )
             search.raise_for_status()
-            results = search.json().get("payload", {}).get("contacts", [])
+            payload = search.json()
+            # La API puede devolver {"payload": {"contacts": [...]}} o {"payload": [...]}
+            if isinstance(payload, dict):
+                inner = payload.get("payload", {})
+                results = inner.get("contacts", []) if isinstance(inner, dict) else (inner if isinstance(inner, list) else [])
+            else:
+                results = []
             if results:
                 return str(results[0]["id"])
 
