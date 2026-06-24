@@ -108,11 +108,14 @@ async def _get_ml_item(client: httpx.AsyncClient, item_id: str) -> dict | None:
         )
         resp.raise_for_status()
         d = resp.json()
+        permalink = d.get("permalink", "")
+        logger.info("ML item %s: '%s' | precio=%s | stock=%s | link=%s",
+                    item_id, d.get("title", ""), d.get("price"), d.get("available_quantity"), permalink)
         return {
             "title": d.get("title", ""),
             "price": d.get("price"),
             "stock": d.get("available_quantity", 0),
-            "permalink": d.get("permalink", ""),
+            "permalink": permalink,
             "thumbnail": d.get("thumbnail", ""),
         }
     except Exception as e:
