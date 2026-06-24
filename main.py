@@ -85,15 +85,42 @@ async def _handle_webhook(body: dict) -> None:
             bot_number = metadata.get("phone_number_id", "")
 
             for msg in messages:
-                # Solo mensajes de texto; ignorar status updates y otros tipos
-                if msg.get("type") != "text":
-                    continue
+                msg_type = msg.get("type")
                 # Evitar loop si el mensaje viene del propio bot
                 if msg.get("from") == bot_number:
                     continue
 
                 phone = msg["from"]
-                text = msg["text"]["body"]
+
+                # Audio — no podemos procesarlo
+                if msg_type == "audio":
+                    await send_whatsapp_message(phone, "No puedo escuchar audios. Por favor escribime tu consulta y te ayudo.")
+                    continue
+
+                # Imagen — extraer texto con visión
+                if msg_type == "image":
+                    image_data = msg.get("image", {})
+                    caption = image_data.get("caption", "")
+                    media_id = image_data.get("id", "")
+                    if media_id:
+                        try:
+                            image_url = await _get_whatsapp_media_url(media_id)
+                            text = await _describe_image(image_url, caption)
+                        except Exception as e:
+                            logger.error("Error procesando imagen: %s", e)
+                            await send_whatsapp_message(phone, "No pude procesar la imagen. ¿Podés describirme qué buscás?")
+                            continue
+                    elif caption:
+                        text = caption
+                    else:
+                        await send_whatsapp_message(phone, "Recibí una imagen pero no pude procesarla. ¿Podés escribirme qué buscás?")
+                        continue
+
+                # Solo texto e imágenes procesadas pasan de acá
+                elif msg_type != "text":
+                    continue
+                else:
+                    text = msg["text"]["body"]
 
                 logger.info("Mensaje recibido de %s: %s", phone, text[:60])
 
@@ -139,6 +166,43 @@ async def _handle_webhook(body: dict) -> None:
                         await send_message_to_chatwoot(conv_id, response, "outgoing")
                         if needs_human_handoff(response):
                             await flag_for_human(conv_id)
+
+
+async def _get_whatsapp_media_url(media_id: str) -> str:
+    """Obtiene la URL de descarga de un media de WhatsApp."""
+    headers = {"Authorization": f"Bearer {META_ACCESS_TOKEN}"}
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            f"https://graph.facebook.com/v19.0/{media_id}", headers=headers
+        )
+        resp.raise_for_status()
+        return resp.json()["url"]
+
+
+async def _describe_image(image_url: str, caption: str) -> str:
+    """Usa GPT-4o para extraer información de una imagen de producto."""
+    from openai import AsyncOpenAI
+    from config import OPENAI_API_KEY
+    client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    prompt = (
+        "El cliente envió una imagen de un producto. "
+        "Describí brevemente qué producto se ve para que pueda buscarlo en una tienda. "
+        "Devolvé solo el nombre del producto en 2-4 palabras, sin explicación."
+    )
+    if caption:
+        prompt += f" El cliente también escribió: '{caption}'"
+    completion = await client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": image_url}},
+            ],
+        }],
+        max_tokens=50,
+    )
+    return completion.choices[0].message.content.strip()
 
 
 async def send_whatsapp_message(phone_number: str, message: str) -> None:
