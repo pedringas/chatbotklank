@@ -124,7 +124,6 @@ async def _handle_webhook(body: dict) -> None:
                     or _extract_ml_item_id(text) is not None
                     or _extract_ml_product_name(text) is not None
                     or _extract_klank_product_name(text) is not None
-                    or len(text.split()) <= 6
                 )
                 if needs_search:
                     await send_whatsapp_message(phone, "Dejame buscar un momento 🔍")
