@@ -220,8 +220,12 @@ async def send_whatsapp_message(phone_number: str, message: str) -> None:
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(WHATSAPP_API_URL, headers=headers, json=payload)
+            if not resp.is_success:
+                logger.error("WhatsApp %s — status=%s body=%s", phone_number, resp.status_code, resp.text[:500])
             resp.raise_for_status()
             logger.info("Mensaje enviado a %s", phone_number)
+    except httpx.HTTPStatusError:
+        pass  # ya logueado arriba
     except Exception as e:
         logger.error("Error enviando mensaje WhatsApp a %s: %s", phone_number, e)
 
