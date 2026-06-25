@@ -9,7 +9,7 @@ import glob
 import re
 from openai import AsyncOpenAI
 from config import OPENAI_API_KEY
-from memory import get_history, save_message
+from memory import get_history, save_message, get_profile, save_profile
 from tools import search_products, get_product_by_id_ml, search_mercadolibre
 
 logger = logging.getLogger(__name__)
@@ -296,10 +296,23 @@ async def process_message(phone_number: str, message: str) -> str:
     Procesa un mensaje entrante y retorna la respuesta del agente.
     Flujo: historial → knowledge → extracción de query → búsqueda de stock → LLM → guardar → responder.
     """
-    history = await get_history(phone_number, limit=10)
+    history = await get_history(phone_number, limit=20)
+    profile = await get_profile(phone_number)
 
     knowledge = _knowledge_cache or load_knowledge_base()
     system = SYSTEM_PROMPT.format(knowledge_base=knowledge)
+
+    # Inyectar perfil del cliente si existe
+    if profile:
+        profile_lines = []
+        if profile.get("name"):
+            profile_lines.append(f"- Nombre: {profile['name']}")
+        if profile.get("preferences"):
+            profile_lines.append(f"- Preferencias conocidas: {profile['preferences']}")
+        if profile.get("notes"):
+            profile_lines.append(f"- Notas: {profile['notes']}")
+        if profile_lines:
+            system += "\n\n═══════════════════════════════\nPERFIL DEL CLIENTE (datos de conversaciones anteriores)\n═══════════════════════════════\n" + "\n".join(profile_lines)
 
     # Contexto adicional de stock si el mensaje lo requiere
     stock_context = ""
@@ -448,7 +461,48 @@ async def process_message(phone_number: str, message: str) -> str:
     await save_message(phone_number, "user", message)
     await save_message(phone_number, "assistant", response)
 
+    # Actualizar perfil del cliente en background (no bloquea la respuesta)
+    import asyncio
+    asyncio.create_task(_update_profile(phone_number, message, response))
+
     return response
+
+
+async def _update_profile(phone_number: str, user_message: str, bot_response: str) -> None:
+    """Extrae info del cliente de la conversación y actualiza su perfil."""
+    try:
+        completion = await _openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Analizá este intercambio de WhatsApp entre un cliente y un bot de una tienda de juguetes. "
+                        "Extraé información útil del cliente si la hay. "
+                        "Respondé SOLO en formato JSON con estos campos (null si no hay info): "
+                        '{"name": "nombre si lo mencionó", '
+                        '"preferences": "preferencias de productos, edades de hijos, categorías de interés", '
+                        '"notes": "presupuesto mencionado, correcciones al bot, info relevante"} '
+                        "Si no hay nada útil, respondé {}"
+                    ),
+                },
+                {"role": "user", "content": f"Cliente: {user_message}\nBot: {bot_response}"},
+            ],
+            max_tokens=150,
+            temperature=0,
+        )
+        import json
+        raw = completion.choices[0].message.content.strip()
+        data = json.loads(raw) if raw and raw != "{}" else {}
+        if data:
+            await save_profile(
+                phone_number,
+                name=data.get("name"),
+                preferences=data.get("preferences"),
+                notes=data.get("notes"),
+            )
+    except Exception as e:
+        logger.debug("No se pudo actualizar perfil para %s: %s", phone_number, e)
 
 
 def needs_human_handoff(response: str) -> bool:
