@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 _openai = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+_admin_sessions: set[str] = set()  # números de WhatsApp con sesión admin activa
+
 # Palabras que indican una consulta de producto/stock
 PRODUCT_KEYWORDS = {
     "hay", "tienen", "stock", "precio", "cuánto", "cuanto",
@@ -318,11 +321,81 @@ async def _extract_search_query(message: str) -> str:
         return message
 
 
+async def _process_admin_message(phone_number: str, message: str) -> str:
+    """Procesa mensajes en modo admin — acceso completo a datos internos."""
+    from tools import search_tiendanube, search_mercadolibre
+
+    # Buscar por SKU o código de producto
+    m = re.search(r"(?:sku|código|codigo|articulo|artículo)[:\s]+([A-Za-z0-9\-_]+)", message, re.IGNORECASE)
+    query = m.group(1) if m else message.strip()
+
+    # Buscar en TN con todos los resultados
+    tn_token = os.getenv("TN_ACCESS_TOKEN", "")
+    tn_store = os.getenv("TN_STORE_ID", "")
+    import httpx
+    results = []
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"https://api.tiendanube.com/v1/{tn_store}/products",
+                headers={"Authentication": f"bearer {tn_token}", "User-Agent": "Klank-Agent/1.0"},
+                params={"q": query, "per_page": 10},
+            )
+            if resp.is_success:
+                data = resp.json()
+                for item in (data if isinstance(data, list) else []):
+                    for v in item.get("variants", [{}]):
+                        title = item.get("name", {}).get("es", "") or str(item.get("name", ""))
+                        results.append(
+                            f"- {title} | SKU: {v.get('sku','N/A')} | "
+                            f"Precio: ${v.get('price','?')} | Stock: {v.get('stock','?')} | "
+                            f"ID variante: {v.get('id','?')}"
+                        )
+    except Exception as e:
+        logger.error("Admin TN search error: %s", e)
+
+    await save_message(phone_number, "user", message)
+    if results:
+        response = f"[ADMIN] Resultados para '{query}':\n" + "\n".join(results[:10])
+    else:
+        response = f"[ADMIN] No encontré productos para '{query}' en Tienda Nube."
+    await save_message(phone_number, "assistant", response)
+    return response
+
+
 async def process_message(phone_number: str, message: str) -> str:
     """
     Procesa un mensaje entrante y retorna la respuesta del agente.
     Flujo: historial → knowledge → extracción de query → búsqueda de stock → LLM → guardar → responder.
     """
+    # ── Modo admin ────────────────────────────────────────────────────────────
+    text_lower = message.lower().strip()
+
+    # Activar sesión admin
+    if text_lower.startswith("admin:") or text_lower.startswith("admin "):
+        password_attempt = message.split(":", 1)[-1].strip() if ":" in message else message.split(None, 1)[-1].strip()
+        if ADMIN_PASSWORD and password_attempt == ADMIN_PASSWORD:
+            _admin_sessions.add(phone_number)
+            await save_message(phone_number, "user", message)
+            await save_message(phone_number, "assistant", "Modo admin activado. Podés consultar stock por SKU, listar pedidos o pedir cualquier dato interno. Mandá 'salir admin' para volver al modo normal.")
+            return "Modo admin activado. Podés consultar stock por SKU, listar pedidos o pedir cualquier dato interno. Mandá 'salir admin' para volver al modo normal."
+        else:
+            await save_message(phone_number, "user", message)
+            await save_message(phone_number, "assistant", "Contraseña incorrecta.")
+            return "Contraseña incorrecta."
+
+    # Desactivar sesión admin
+    if text_lower in ("salir admin", "exit admin", "salir modo admin"):
+        _admin_sessions.discard(phone_number)
+        await save_message(phone_number, "user", message)
+        await save_message(phone_number, "assistant", "Modo admin desactivado.")
+        return "Modo admin desactivado."
+
+    # Procesamiento en modo admin
+    if phone_number in _admin_sessions:
+        return await _process_admin_message(phone_number, message)
+    # ─────────────────────────────────────────────────────────────────────────
+
     history = await get_history(phone_number, limit=20)
     profile = await get_profile(phone_number)
 
