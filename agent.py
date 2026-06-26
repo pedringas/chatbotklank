@@ -10,7 +10,7 @@ import re
 from openai import AsyncOpenAI
 from config import OPENAI_API_KEY
 from memory import get_history, save_message, get_profile, save_profile
-from tools import search_products, get_product_by_id_ml, search_mercadolibre
+from tools import search_products, get_product_by_id_ml, search_mercadolibre, get_order_tiendanube, get_order_mercadolibre
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +209,33 @@ def _is_ml_query(message: str) -> bool:
     return any(kw in lower for kw in ("mercadolibre", "mercado libre", " ml ", "en ml", "en meli", "meli"))
 
 
+def _extract_order_id(message: str) -> tuple[str | None, str]:
+    """
+    Extrae un número de orden del mensaje.
+    Retorna (order_id, source) donde source es 'tiendanube', 'mercadolibre' o 'unknown'.
+    """
+    # Número de orden explícito con prefijo
+    m = re.search(r"(?:orden|pedido|compra|n[uú]mero)[^\d]*(\d{5,})", message.lower())
+    if m:
+        return m.group(1), "unknown"
+    # Número solo de 5+ dígitos
+    m = re.search(r"\b(\d{5,})\b", message)
+    if m:
+        return m.group(1), "unknown"
+    return None, "unknown"
+
+
+def _is_order_query(message: str) -> bool:
+    """Detecta si el mensaje es una consulta sobre un pedido."""
+    lower = message.lower()
+    return any(kw in lower for kw in (
+        "pedido", "orden", "compra", "seguimiento", "tracking",
+        "cuándo llega", "cuando llega", "dónde está", "donde esta",
+        "estado de", "mi compra", "mi pedido", "número de orden",
+        "número de seguimiento", "código de seguimiento",
+    ))
+
+
 def _extract_ml_item_id(message: str) -> str | None:
     """
     Extrae el item ID individual de una URL de MercadoLibre.
@@ -317,10 +344,52 @@ async def process_message(phone_number: str, message: str) -> str:
     # Contexto adicional de stock si el mensaje lo requiere
     stock_context = ""
 
-    ml_item_id = _extract_ml_item_id(message)
-    klank_product_name = _extract_klank_product_name(message)
-    ml_product_name = None if (ml_item_id or klank_product_name) else _extract_ml_product_name(message)
-    asks_ml = _is_ml_query(message)
+    # Inicializar variables de producto (pueden quedar en None si es consulta de pedido)
+    ml_item_id = None
+    klank_product_name = None
+    ml_product_name = None
+    asks_ml = False
+
+    # Caso pedido — tiene prioridad sobre búsqueda de productos
+    if _is_order_query(message):
+        order_id, _ = _extract_order_id(message)
+        if order_id:
+            # Intentar TN primero, luego ML
+            order = await get_order_tiendanube(order_id)
+            if "error" in order:
+                order = await get_order_mercadolibre(order_id)
+
+            if "error" not in order:
+                tracking_info = ""
+                if order.get("tracking_number"):
+                    tracking_info = f"\n- Número de seguimiento: {order['tracking_number']}"
+                    if order.get("tracking_url"):
+                        tracking_info += f"\n- Rastrear envío: {order['tracking_url']}"
+                stock_context = (
+                    f"\n[Datos reales del pedido #{order['order_id']} desde {order['source']}]\n"
+                    f"- Estado: {order.get('status', 'Desconocido')}\n"
+                    f"- Pago: {order.get('payment_status', 'Desconocido')}"
+                    + tracking_info +
+                    "\n[IMPORTANTE: Informá estos datos exactos al cliente. No inventes información adicional.]"
+                )
+            else:
+                stock_context = (
+                    f"\n[No se encontró el pedido #{order_id} en ninguna de nuestras tiendas]"
+                    "\n[IMPORTANTE: Pedile al cliente que verifique el número de pedido. "
+                    "Si es de MercadoLibre debe buscarlo en su cuenta de ML en 'Mis compras'.]"
+                )
+        else:
+            stock_context = (
+                "\n[El cliente pregunta por su pedido pero no proporcionó el número]"
+                "\n[IMPORTANTE: Pedile el número de orden o pedido para poder buscarlo. "
+                "Aclarále que si compró por MercadoLibre puede encontrarlo en 'Mis compras'.]"
+            )
+
+    else:
+        ml_item_id = _extract_ml_item_id(message)
+        klank_product_name = _extract_klank_product_name(message)
+        ml_product_name = None if (ml_item_id or klank_product_name) else _extract_ml_product_name(message)
+        asks_ml = _is_ml_query(message)
 
     if asks_ml and not ml_item_id and not ml_product_name:
         # El cliente pregunta por ML — extraer el producto del mensaje o del historial

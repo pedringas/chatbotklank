@@ -233,6 +233,112 @@ async def get_product_by_id_ml(item_id: str) -> dict:
         return {"error": f"No se pudo obtener el producto {item_id}."}
 
 
+async def get_order_tiendanube(order_id: str) -> dict:
+    """Obtiene el estado de un pedido de Tienda Nube por número de orden."""
+    tn_token = os.getenv("TN_ACCESS_TOKEN", TN_ACCESS_TOKEN)
+    tn_store = os.getenv("TN_STORE_ID", TN_STORE_ID)
+    headers = {
+        "Authentication": f"bearer {tn_token}",
+        "User-Agent": "Klank-Agent/1.0",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            resp = await client.get(
+                f"https://api.tiendanube.com/v1/{tn_store}/orders/{order_id}",
+                headers=headers,
+            )
+            if resp.status_code == 404:
+                return {"error": "Pedido no encontrado en Tienda Nube."}
+            resp.raise_for_status()
+            d = resp.json()
+
+        status_map = {
+            "open": "Abierto / En proceso",
+            "closed": "Completado",
+            "cancelled": "Cancelado",
+        }
+        payment_map = {
+            "pending": "Pago pendiente",
+            "authorized": "Pago autorizado",
+            "paid": "Pagado",
+            "voided": "Pago anulado",
+            "refunded": "Reembolsado",
+        }
+        shipping = d.get("shipping_tracking_number") or d.get("shipping", {}).get("tracking_number")
+        tracking_url = d.get("shipping_tracking_url") or d.get("shipping", {}).get("tracking_url")
+
+        return {
+            "source": "tiendanube",
+            "order_id": d.get("number") or order_id,
+            "status": status_map.get(d.get("status", ""), d.get("status", "")),
+            "payment_status": payment_map.get(d.get("payment_status", ""), d.get("payment_status", "")),
+            "tracking_number": shipping,
+            "tracking_url": tracking_url,
+            "created_at": d.get("created_at", ""),
+            "updated_at": d.get("updated_at", ""),
+        }
+    except Exception as e:
+        logger.error("Error obteniendo pedido TN %s: %s", order_id, e)
+        return {"error": "No se pudo consultar el pedido en este momento."}
+
+
+async def get_order_mercadolibre(order_id: str) -> dict:
+    """Obtiene el estado de un pedido de MercadoLibre por ID."""
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            resp = await client.get(
+                f"https://api.mercadolibre.com/orders/{order_id}",
+                headers=_ml_headers(),
+            )
+            if resp.status_code == 401:
+                await _refresh_ml_token()
+                resp = await client.get(
+                    f"https://api.mercadolibre.com/orders/{order_id}",
+                    headers=_ml_headers(),
+                )
+            if resp.status_code == 404:
+                return {"error": "Pedido no encontrado en MercadoLibre."}
+            resp.raise_for_status()
+            d = resp.json()
+
+        shipment_id = d.get("shipping", {}).get("id")
+        tracking_number = None
+        tracking_url = None
+        if shipment_id:
+            try:
+                sh = await client.get(
+                    f"https://api.mercadolibre.com/shipments/{shipment_id}",
+                    headers=_ml_headers(),
+                )
+                if sh.is_success:
+                    sh_data = sh.json()
+                    tracking_number = sh_data.get("tracking_number")
+                    tracking_url = sh_data.get("tracking_url")
+            except Exception:
+                pass
+
+        status_map = {
+            "confirmed": "Confirmado",
+            "payment_required": "Pago pendiente",
+            "payment_in_process": "Pago en proceso",
+            "paid": "Pagado",
+            "partially_paid": "Pago parcial",
+            "cancelled": "Cancelado",
+        }
+
+        return {
+            "source": "mercadolibre",
+            "order_id": order_id,
+            "status": status_map.get(d.get("status", ""), d.get("status", "")),
+            "tracking_number": tracking_number,
+            "tracking_url": tracking_url,
+            "date_created": d.get("date_created", ""),
+        }
+    except Exception as e:
+        logger.error("Error obteniendo pedido ML %s: %s", order_id, e)
+        return {"error": "No se pudo consultar el pedido en este momento."}
+
+
 async def search_products(query: str) -> dict:
     """
     Busca productos con TN como fuente primaria y ML como fallback.
