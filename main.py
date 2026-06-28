@@ -424,6 +424,23 @@ async def chatwoot_notifications(_: Request):
     return JSONResponse({"status": "ok"})
 
 
+# ─── Endpoint de evaluación (solo para el script eval/run_eval.py) ───────────
+
+@app.post("/eval/message")
+async def eval_message(request: Request):
+    """
+    Recibe un mensaje del script de evaluación y devuelve la respuesta del bot.
+    No requiere autenticación — solo expuesto para uso del eval script local.
+    """
+    body = await request.json()
+    phone = body.get("phone", "eval_test")
+    message = body.get("message", "")
+    if not message:
+        return JSONResponse({"error": "message requerido"}, status_code=400)
+    response = await process_message(phone, message)
+    return JSONResponse({"response": response})
+
+
 # ─── Health check ─────────────────────────────────────────────────────────────
 
 @app.get("/health")
