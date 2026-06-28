@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 import requests
-from anthropic import Anthropic
+from openai import OpenAI
 from dotenv import load_dotenv
 from jinja2 import Environment, FileSystemLoader
 
@@ -25,8 +25,8 @@ load_dotenv()
 
 BOT_URL = os.getenv("BOT_URL", "https://chatbotklank-production.up.railway.app")
 DATABASE_PUBLIC_URL = os.getenv("DATABASE_PUBLIC_URL", "")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-JUDGE_MODEL = "claude-sonnet-4-6"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+JUDGE_MODEL = "gpt-4o"
 
 EVAL_DIR = Path(__file__).parent
 CASES_FILE = EVAL_DIR / "eval_cases.json"
@@ -56,15 +56,16 @@ def call_judge(
         ensure_ascii=False,
         indent=2,
     )
-    client = Anthropic(api_key=ANTHROPIC_API_KEY)
-    msg = client.messages.create(
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    msg = client.chat.completions.create(
         model=JUDGE_MODEL,
         max_tokens=256,
+        temperature=0,
         messages=[
             {"role": "user", "content": f"{judge_prompt}\n\n{user_content}"},
         ],
     )
-    raw = msg.content[0].text.strip()
+    raw = msg.choices[0].message.content.strip()
     return json.loads(raw)
 
 
