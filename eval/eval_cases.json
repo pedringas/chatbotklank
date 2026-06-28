@@ -1,0 +1,302 @@
+[
+  {
+    "id": "CASO_01",
+    "categoria": "stock",
+    "input": "Hola, tienen el auto de control remoto Nikko?",
+    "turno_2": null,
+    "tool_result_simulado": {"producto": "Auto RC Nikko", "precio": null, "stock": true},
+    "esperado": "menciona producto y stock, no inventa precio si no está en tool_result",
+    "criterio_fallo": "menciona precio no presente en tool_result, inventa variantes",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_02",
+    "categoria": "stock",
+    "input": "Tienen mochilas escolares?",
+    "turno_2": null,
+    "tool_result_simulado": null,
+    "esperado": "dice honestamente que no encontró, pide que reformule",
+    "criterio_fallo": "menciona cualquier producto, precio o link no verificado",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_03",
+    "categoria": "stock",
+    "input": "Tienen mochilas escolares?",
+    "turno_2": "¿y no tenés algo parecido? alguna mochila o bolso?",
+    "tool_result_simulado": null,
+    "esperado": "mantiene que no encontró, no inventa alternativas",
+    "criterio_fallo": "menciona cualquier producto no verificado en turno_2",
+    "es_critico": true
+  },
+  {
+    "id": "CASO_04",
+    "categoria": "stock",
+    "input": "Cuántas unidades tienen del set de plastilina x12?",
+    "turno_2": null,
+    "tool_result_simulado": {"producto": "Set plastilina x12", "stock": 3},
+    "esperado": "informa exactamente 3 unidades",
+    "criterio_fallo": "da número distinto a 3",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_05",
+    "categoria": "stock",
+    "input": "Me reservás 10 unidades?",
+    "turno_2": null,
+    "tool_result_simulado": {"producto": "Set plastilina x12", "stock": 3},
+    "esperado": "informa que solo hay 3, no confirma reserva de 10",
+    "criterio_fallo": "confirma reserva de 10 unidades",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_06",
+    "categoria": "stock",
+    "input": "El producto sigue disponible?",
+    "turno_2": null,
+    "tool_result_simulado": null,
+    "esperado": "pide que especifique qué producto",
+    "criterio_fallo": "asume un producto y responde sin confirmación",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_07",
+    "categoria": "precios",
+    "input": "Cuánto sale el set de cocina de juguete?",
+    "turno_2": null,
+    "tool_result_simulado": {"producto": "Set cocina juguete", "precio": 8500},
+    "esperado": "informa $8.500, no modifica el precio",
+    "criterio_fallo": "precio distinto a 8500",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_08",
+    "categoria": "precios",
+    "input": "Está caro, no me hacés un descuento?",
+    "turno_2": null,
+    "tool_result_simulado": {"producto": "Set cocina juguete", "precio": 8500},
+    "esperado": "no modifica precio, deriva o escala",
+    "criterio_fallo": "ofrece descuento o modifica precio",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_09",
+    "categoria": "precios",
+    "input": "Vi que en MercadoLibre está más barato",
+    "turno_2": null,
+    "tool_result_simulado": {"precio_tn": 8500, "precio_ml": 9200},
+    "esperado": "informa ambos precios reales sin invertirlos",
+    "criterio_fallo": "invierte precios o menciona precio no verificado",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_10",
+    "categoria": "precios",
+    "input": "Cuánto sale el dron Spider X2?",
+    "turno_2": null,
+    "tool_result_simulado": null,
+    "esperado": "dice que no encontró ese producto, no inventa precio",
+    "criterio_fallo": "menciona cualquier precio",
+    "es_critico": true
+  },
+  {
+    "id": "CASO_11",
+    "categoria": "precios",
+    "input": "El precio incluye IVA?",
+    "turno_2": null,
+    "tool_result_simulado": {"producto": "Set cocina juguete", "precio": 8500},
+    "esperado": "dice que no tiene esa info y escala",
+    "criterio_fallo": "afirma o niega IVA sin base",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_12",
+    "categoria": "mayorista",
+    "input": "Hacen precios mayoristas?",
+    "turno_2": null,
+    "tool_result_simulado": null,
+    "esperado": "menciona ventas mayoristas/volumen Y usa frase exacta de derivación",
+    "criterio_fallo": "no usa frase exacta O inventa condiciones o porcentajes",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_13",
+    "categoria": "mayorista",
+    "input": "Quiero comprar 50 unidades del set escolar, qué precio me dan?",
+    "turno_2": null,
+    "tool_result_simulado": null,
+    "esperado": "usa frase exacta de derivación, no calcula precio por volumen",
+    "criterio_fallo": "inventa precio mayorista o no escala",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_14",
+    "categoria": "mayorista",
+    "input": "Son distribuidores? puedo revender?",
+    "turno_2": null,
+    "tool_result_simulado": null,
+    "esperado": "usa frase exacta de derivación",
+    "criterio_fallo": "inventa condiciones de reventa",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_15",
+    "categoria": "mayorista",
+    "input": "Necesito factura A",
+    "turno_2": null,
+    "tool_result_simulado": null,
+    "esperado": "usa frase exacta de derivación",
+    "criterio_fallo": "confirma o niega sin base",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_16",
+    "categoria": "mayorista",
+    "input": "Tienen cuenta corriente para clientes frecuentes?",
+    "turno_2": null,
+    "tool_result_simulado": null,
+    "esperado": "usa frase exacta de derivación",
+    "criterio_fallo": "inventa política financiera",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_17",
+    "categoria": "envios",
+    "input": "Hacen envíos a Mendoza?",
+    "turno_2": null,
+    "tool_result_simulado": null,
+    "esperado": "informa 3 a 5 días hábiles, costo variable, Correo Argentino o Andreani",
+    "criterio_fallo": "inventa plazo o costo específico no presente en knowledge",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_18",
+    "categoria": "envios",
+    "input": "Cuánto tarda en llegar a Córdoba?",
+    "turno_2": null,
+    "tool_result_simulado": null,
+    "esperado": "informa 24hs hábiles, envío gratis dentro del anillo",
+    "criterio_fallo": "da plazo o costo inventado",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_19",
+    "categoria": "envios",
+    "input": "Puedo retirar por local?",
+    "turno_2": null,
+    "tool_result_simulado": null,
+    "esperado": "informa dirección exacta, horario L-V 8 a 17:30, solo cuando pedido listo",
+    "criterio_fallo": "da dirección incorrecta, horario incorrecto, o confirma sin condición",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_20",
+    "categoria": "envios",
+    "input": "El envío es gratis?",
+    "turno_2": null,
+    "tool_result_simulado": null,
+    "esperado": "aclara que es gratis solo dentro del anillo de Córdoba Capital",
+    "criterio_fallo": "generaliza envío gratis sin aclarar la condición geográfica",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_21",
+    "categoria": "envios",
+    "input": "Me mandaron el pedido pero llegó roto",
+    "turno_2": null,
+    "tool_result_simulado": null,
+    "esperado": "usa frase exacta de derivación, tono empático",
+    "criterio_fallo": "intenta resolver solo, no escala",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_22",
+    "categoria": "medios_de_pago",
+    "input": "Aceptan transferencia?",
+    "turno_2": null,
+    "tool_result_simulado": null,
+    "esperado": "responde según medios definidos en knowledge, sin inventar",
+    "criterio_fallo": "confirma o niega sin base en knowledge",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_23",
+    "categoria": "medios_de_pago",
+    "input": "Tienen cuotas sin interés?",
+    "turno_2": null,
+    "tool_result_simulado": null,
+    "esperado": "responde según policy real o escala",
+    "criterio_fallo": "inventa cantidad de cuotas",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_24",
+    "categoria": "medios_de_pago",
+    "input": "Puedo pagar en efectivo?",
+    "turno_2": null,
+    "tool_result_simulado": null,
+    "esperado": "responde según policy real",
+    "criterio_fallo": "confirma o niega sin base",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_25",
+    "categoria": "medios_de_pago",
+    "input": "Aceptan criptomonedas?",
+    "turno_2": null,
+    "tool_result_simulado": null,
+    "esperado": "dice que no tiene esa info y escala",
+    "criterio_fallo": "confirma o niega inventando",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_26",
+    "categoria": "pedidos",
+    "input": "Hice un pedido ayer, cómo lo rastro?",
+    "turno_2": null,
+    "tool_result_simulado": null,
+    "esperado": "pide número de pedido o deriva a canal de seguimiento",
+    "criterio_fallo": "inventa estado de pedido",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_27",
+    "categoria": "pedidos",
+    "input": "Mi pedido #4521 no llegó",
+    "turno_2": null,
+    "tool_result_simulado": null,
+    "esperado": "usa frase exacta de derivación con el número de pedido",
+    "criterio_fallo": "intenta resolver solo o inventa estado",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_28",
+    "categoria": "pedidos",
+    "input": "Cuándo llega mi compra?",
+    "turno_2": null,
+    "tool_result_simulado": null,
+    "esperado": "pide número de pedido, no inventa fecha",
+    "criterio_fallo": "da fecha inventada",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_29",
+    "categoria": "pedidos",
+    "input": "Quiero cancelar mi pedido",
+    "turno_2": null,
+    "tool_result_simulado": null,
+    "esperado": "usa frase exacta de derivación, no confirma cancelación solo",
+    "criterio_fallo": "confirma cancelación sin escalar",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_30",
+    "categoria": "pedidos",
+    "input": "Estoy muy enojado, llevo una semana esperando y nadie me responde",
+    "turno_2": null,
+    "tool_result_simulado": null,
+    "esperado": "usa frase exacta de derivación, tono empático, no intenta resolver",
+    "criterio_fallo": "tono defensivo, intenta resolver solo, no escala",
+    "es_critico": true
+  }
+]
