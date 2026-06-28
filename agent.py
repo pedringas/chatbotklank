@@ -7,10 +7,12 @@ import logging
 import os
 import glob
 import re
+import time
 from openai import AsyncOpenAI
 from config import OPENAI_API_KEY
 from memory import get_history, save_message, get_profile, save_profile
 from tools import search_products, get_product_by_id_ml, search_mercadolibre, get_order_tiendanube, get_order_mercadolibre
+from agent_logger import log_interaction
 
 logger = logging.getLogger(__name__)
 
@@ -396,6 +398,13 @@ async def process_message(phone_number: str, message: str) -> str:
         return await _process_admin_message(phone_number, message)
     # ─────────────────────────────────────────────────────────────────────────
 
+    start = time.monotonic()
+    tool_used = None
+    tool_result = None
+    escalated = False
+    error_str = None
+    response = None
+
     history = await get_history(phone_number, limit=20)
     profile = await get_profile(phone_number)
 
@@ -425,12 +434,14 @@ async def process_message(phone_number: str, message: str) -> str:
 
     # Caso pedido — tiene prioridad sobre búsqueda de productos
     if _is_order_query(message):
+        tool_used = "pedido"
         order_id, _ = _extract_order_id(message)
         if order_id:
             # Intentar TN primero, luego ML
             order = await get_order_tiendanube(order_id)
             if "error" in order:
                 order = await get_order_mercadolibre(order_id)
+            tool_result = order
 
             if "error" not in order:
                 tracking_info = ""
@@ -465,6 +476,7 @@ async def process_message(phone_number: str, message: str) -> str:
         asks_ml = _is_ml_query(message)
 
     if asks_ml and not ml_item_id and not ml_product_name:
+        tool_used = "mercadolibre"
         # El cliente pregunta por ML — extraer el producto del mensaje o del historial
         search_query = await _extract_search_query(message)
         if not search_query:
@@ -477,6 +489,7 @@ async def process_message(phone_number: str, message: str) -> str:
         if search_query:
             logger.info("Buscando en MercadoLibre: '%s'", search_query)
             result = await search_mercadolibre(search_query)
+            tool_result = result
             products = result.get("products", [])
             if products:
                 lines = []
@@ -497,8 +510,10 @@ async def process_message(phone_number: str, message: str) -> str:
                 )
 
     elif klank_product_name:
+        tool_used = "tienda_nube"
         # Cliente compartió URL de nuestra tienda — buscar ese producto en TN
         result = await search_products(klank_product_name)
+        tool_result = result
         products = result.get("products", [])
         if products:
             lines = []
@@ -515,7 +530,9 @@ async def process_message(phone_number: str, message: str) -> str:
             stock_context = "\n[No encontramos ese producto en nuestra tienda en este momento.]"
 
     elif ml_item_id:
+        tool_used = "mercadolibre"
         product = await get_product_by_id_ml(ml_item_id)
+        tool_result = product
         if "error" not in product:
             stock_context = (
                 f"\n[Producto de MercadoLibre consultado directamente]\n"
@@ -527,8 +544,10 @@ async def process_message(phone_number: str, message: str) -> str:
             stock_context = "\n[No se pudo consultar ese producto de ML. Informá al cliente que no pudiste verificar ese item específico.]"
 
     elif ml_product_name:
+        tool_used = "tienda_nube"
         # URL de catálogo ML — buscar por nombre extraído del slug
         result = await search_products(ml_product_name)
+        tool_result = result
         products = result.get("products", [])
         source = result.get("source", "tiendanube")
         source_label = "Tienda Nube (tienda propia)" if source == "tiendanube" else "MercadoLibre"
@@ -556,6 +575,8 @@ async def process_message(phone_number: str, message: str) -> str:
         if search_query:
             logger.info("Buscando en tiendas: '%s'", search_query)
             result = await search_products(search_query)
+            tool_used = result.get("source", "tienda_nube")
+            tool_result = result
             products = result.get("products", [])
             source = result.get("source", "tiendanube")
             source_label = "Tienda Nube (tienda propia)" if source == "tiendanube" else "MercadoLibre"
@@ -588,6 +609,7 @@ async def process_message(phone_number: str, message: str) -> str:
     messages.extend(history)
     messages.append({"role": "user", "content": user_content})
 
+    import asyncio
     try:
         completion = await _openai.chat.completions.create(
             model="gpt-4o-mini",
@@ -596,15 +618,26 @@ async def process_message(phone_number: str, message: str) -> str:
             temperature=0.7,
         )
         response = completion.choices[0].message.content.strip()
+        escalated = needs_human_handoff(response)
     except Exception as e:
         logger.error("Error llamando a OpenAI: %s", e)
+        error_str = str(e)
         response = "Tuve un problema técnico. Intentá de nuevo en unos minutos."
+    finally:
+        processing_ms = int((time.monotonic() - start) * 1000)
+        asyncio.create_task(log_interaction(
+            phone_number=phone_number,
+            user_message=message,
+            response_text=response or "",
+            tool_used=tool_used,
+            tool_result=tool_result,
+            escalated=escalated,
+            processing_ms=processing_ms,
+            error=error_str,
+        ))
 
     await save_message(phone_number, "user", message)
     await save_message(phone_number, "assistant", response)
-
-    # Actualizar perfil del cliente en background (no bloquea la respuesta)
-    import asyncio
     asyncio.create_task(_update_profile(phone_number, message, response))
 
     return response
