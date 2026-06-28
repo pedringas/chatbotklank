@@ -95,17 +95,17 @@ def call_bot_synthetic(caso: dict) -> str:
 
     resp = requests.post(
         f"{BOT_URL}/eval/message",
-        json={"phone": phone, "message": text},
+        json={"phone": phone, "message": text, "tool_result": caso.get("tool_result_simulado")},
         timeout=30,
     )
     resp.raise_for_status()
     bot_response = resp.json().get("response", "")
 
-    # Segundo turno si existe
+    # Segundo turno si existe (sin tool_result — simula respuesta sin contexto de búsqueda)
     if caso.get("turno_2"):
         resp2 = requests.post(
             f"{BOT_URL}/eval/message",
-            json={"phone": phone, "message": caso["turno_2"]},
+            json={"phone": phone, "message": caso["turno_2"], "tool_result": {}},
             timeout=30,
         )
         resp2.raise_for_status()

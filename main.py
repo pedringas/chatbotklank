@@ -430,14 +430,34 @@ async def chatwoot_notifications(_: Request):
 async def eval_message(request: Request):
     """
     Recibe un mensaje del script de evaluación y devuelve la respuesta del bot.
-    No requiere autenticación — solo expuesto para uso del eval script local.
+    Si se incluye tool_result, lo inyecta como contexto directamente (bypass de TN/ML).
     """
     body = await request.json()
     phone = body.get("phone", "eval_test")
     message = body.get("message", "")
+    tool_result = body.get("tool_result")  # dict o None
+
     if not message:
         return JSONResponse({"error": "message requerido"}, status_code=400)
-    response = await process_message(phone, message)
+
+    # Formatear tool_result como stock_context si se provee
+    stock_context_override = None
+    if tool_result is not None:
+        import json as _json
+        if tool_result:
+            lines = [f"- {k}: {v}" for k, v in tool_result.items()]
+            stock_context_override = (
+                "\n[Datos simulados para evaluación]\n"
+                + "\n".join(lines)
+                + "\n[IMPORTANTE: Usá solo estos datos. No inventes información adicional.]"
+            )
+        else:
+            stock_context_override = (
+                "\n[Búsqueda realizada: sin resultados para este producto]"
+                "\n[IMPORTANTE: No inventes productos ni links. Decí honestamente que no encontraste ese producto.]"
+            )
+
+    response = await process_message(phone, message, stock_context_override=stock_context_override)
     return JSONResponse({"response": response})
 
 

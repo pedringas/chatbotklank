@@ -365,10 +365,16 @@ async def _process_admin_message(phone_number: str, message: str) -> str:
     return response
 
 
-async def process_message(phone_number: str, message: str) -> str:
+async def process_message(
+    phone_number: str,
+    message: str,
+    stock_context_override: str | None = None,
+) -> str:
     """
     Procesa un mensaje entrante y retorna la respuesta del agente.
     Flujo: historial → knowledge → extracción de query → búsqueda de stock → LLM → guardar → responder.
+    Si stock_context_override está presente, saltea toda la detección de tools y lo usa directamente
+    (usado por el endpoint /eval/message para inyectar tool_result_simulado).
     """
     # ── Modo admin ────────────────────────────────────────────────────────────
     text_lower = message.lower().strip()
@@ -425,6 +431,45 @@ async def process_message(phone_number: str, message: str) -> str:
 
     # Contexto adicional de stock si el mensaje lo requiere
     stock_context = ""
+
+    # Bypass de tools para evaluación sintética
+    if stock_context_override is not None:
+        stock_context = stock_context_override
+        tool_used = "eval_override"
+        tool_result = None
+        # Saltar detección de tools y pasar directo al LLM
+        user_content = message + stock_context
+        messages_llm = [{"role": "system", "content": system}]
+        messages_llm.extend(history)
+        messages_llm.append({"role": "user", "content": user_content})
+        import asyncio
+        try:
+            completion = await _openai.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages_llm,
+                max_tokens=400,
+                temperature=0.7,
+            )
+            response = completion.choices[0].message.content.strip()
+            escalated = needs_human_handoff(response)
+        except Exception as e:
+            error_str = str(e)
+            response = "Tuve un problema técnico. Intentá de nuevo en unos minutos."
+        finally:
+            processing_ms = int((time.monotonic() - start) * 1000)
+            asyncio.create_task(log_interaction(
+                phone_number=phone_number,
+                user_message=message,
+                response_text=response or "",
+                tool_used=tool_used,
+                tool_result=tool_result,
+                escalated=escalated,
+                processing_ms=processing_ms,
+                error=error_str,
+            ))
+        await save_message(phone_number, "user", message)
+        await save_message(phone_number, "assistant", response)
+        return response
 
     # Inicializar variables de producto (pueden quedar en None si es consulta de pedido)
     ml_item_id = None
