@@ -241,7 +241,18 @@ def _is_defective_product(message: str) -> bool:
         "llegó defectuoso", "llego defectuoso", "llegó incompleto", "llego incompleto",
         "llegó diferente", "llego diferente", "llegó dañado", "llego dañado",
         "producto roto", "producto defectuoso", "vino roto", "vino malo",
-        "estaba roto", "estaba roto",
+        "estaba roto",
+    ))
+
+
+def _is_frustrated_client(message: str) -> bool:
+    """Detecta mensajes con tono agresivo o de alto nivel de frustración."""
+    lower = message.lower()
+    return any(kw in lower for kw in (
+        "muy enojado", "muy enojada", "estoy harto", "estoy harta",
+        "nadie me responde", "nadie responde", "semana esperando", "días esperando",
+        "dias esperando", "pésimo servicio", "pesimo servicio", "no vuelvo a comprar",
+        "quiero hablar con", "quiero hablar con un humano", "pasame con alguien",
     ))
 
 
@@ -492,11 +503,11 @@ async def process_message(
     ml_product_name = None
     asks_ml = False
 
-    # Producto roto/defectuoso — escalar DE INMEDIATO sin buscar número de orden
-    if _is_defective_product(message):
+    # Producto roto/defectuoso o cliente muy frustrado — escalar DE INMEDIATO
+    if _is_defective_product(message) or _is_frustrated_client(message):
         stock_context = (
-            "\n[El cliente reporta un producto roto, defectuoso o incompleto]"
-            "\n[IMPORTANTE: Usar EXACTAMENTE la frase de derivación a humano. No pidas número de orden ni más datos.]"
+            "\n[El cliente reporta un problema grave o expresa frustración alta]"
+            "\n[IMPORTANTE: Usar EXACTAMENTE la frase de derivación a humano. No pidas número de orden ni más datos. Tono empático.]"
         )
 
     # Caso pedido — tiene prioridad sobre búsqueda de productos

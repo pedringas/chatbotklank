@@ -86,12 +86,12 @@ def call_bot_synthetic(caso: dict) -> str:
     # Limpiar historial del número de prueba antes de cada caso
     try:
         requests.post(
-            f"{BOT_URL}/admin/clear-history",
+            f"{BOT_URL}/eval/clear-history",
             json={"phone": phone},
             timeout=5,
         )
     except Exception:
-        pass  # endpoint opcional, ignorar si no existe
+        pass
 
     resp = requests.post(
         f"{BOT_URL}/eval/message",

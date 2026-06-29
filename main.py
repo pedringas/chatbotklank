@@ -426,6 +426,16 @@ async def chatwoot_notifications(_: Request):
 
 # ─── Endpoint de evaluación (solo para el script eval/run_eval.py) ───────────
 
+@app.post("/eval/clear-history")
+async def eval_clear_history(request: Request):
+    """Limpia el historial de conversación de un número (usado entre casos del eval)."""
+    from memory import clear_history
+    body = await request.json()
+    phone = body.get("phone", "eval_test")
+    await clear_history(phone)
+    return JSONResponse({"status": "ok"})
+
+
 @app.post("/eval/message")
 async def eval_message(request: Request):
     """
