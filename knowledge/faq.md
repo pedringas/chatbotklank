@@ -12,7 +12,7 @@
 **Respuesta:** <!-- COMPLETAR: si pueden pasar al local, si tienen showroom, etc. -->
 
 **Pregunta:** ¿Hacen precio por cantidad o mayorista?
-**Respuesta:** Sí, trabajamos con ventas mayoristas y por cantidad. Para consultas mayoristas, compras en volumen o precios especiales por cantidad, derivamos con el encargado de esa área. Usá la frase exacta de derivación a humano.
+**Respuesta:** Sí, trabajamos con ventas mayoristas y por cantidad. Las consultas de precios mayoristas, compras en volumen o precios especiales por cantidad las gestiona un asesor del equipo.
 
 **Pregunta:** ¿Cómo sé si un producto está disponible?
 **Respuesta:** El stock se actualiza en tiempo real en nuestras publicaciones de MercadoLibre y Tienda Nube. También podés consultarnos directamente por este chat.

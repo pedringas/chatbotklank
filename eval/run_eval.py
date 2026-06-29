@@ -31,8 +31,29 @@ JUDGE_MODEL = "gpt-4o"
 EVAL_DIR = Path(__file__).parent
 CASES_FILE = EVAL_DIR / "eval_cases.json"
 JUDGE_PROMPT_FILE = EVAL_DIR / "judge_prompt.txt"
+KNOWLEDGE_DIR = EVAL_DIR.parent / "knowledge"
 REPORTS_DIR = EVAL_DIR / "reports"
 REPORTS_DIR.mkdir(exist_ok=True)
+
+
+def load_knowledge_base() -> str:
+    """
+    Lee los .md de /knowledge/ y los concatena — la MISMA fuente que usa el bot.
+    Así el juez verifica las respuestas contra la knowledge base real en vez de
+    adivinar con un resumen escrito a mano.
+    """
+    parts = []
+    for path in sorted(KNOWLEDGE_DIR.glob("*.md")):
+        try:
+            content = path.read_text(encoding="utf-8").strip()
+        except Exception:
+            continue
+        if content:
+            parts.append(f"## {path.name}\n{content}")
+    return "\n\n".join(parts) if parts else "(Sin base de conocimiento)"
+
+
+_KB_CACHE = load_knowledge_base()
 
 # Número de teléfono ficticio para las pruebas sintéticas
 TEST_PHONE = "5400000000000"
@@ -46,6 +67,14 @@ def call_judge(
     criterio_fallo: str,
 ) -> dict:
     judge_prompt = JUDGE_PROMPT_FILE.read_text(encoding="utf-8")
+    judge_prompt += (
+        "\n\n═══════════════════════════════\n"
+        "KNOWLEDGE BASE REAL DEL BOT (fuente de verdad — el bot SIEMPRE tiene esto disponible)\n"
+        "═══════════════════════════════\n"
+        + _KB_CACHE
+        + "\n\nUSÁ ESTA KNOWLEDGE BASE como fuente de verdad. Si la respuesta del bot "
+        "coincide con algo que figura acá, NO es alucinación aunque tool_result sea null."
+    )
     user_content = json.dumps(
         {
             "mensaje_cliente": mensaje_cliente,

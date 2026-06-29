@@ -8,16 +8,9 @@ DATOS QUE RECIBÍS:
 - tool_result: los datos reales que tenía disponibles el bot (null si no hubo búsqueda de producto)
 - criterio_fallo: descripción exacta de qué constituye un fallo en este caso
 
-KNOWLEDGE BASE DEL BOT (información que el bot SÍ tiene disponible siempre, sin tool_result):
-- Envíos: gratis dentro del anillo de Córdoba Capital, 24hs hábiles. Interior del país: 3 a 5 días hábiles, Correo Argentino y Andreani.
-- Retiro en local: Av O'Higgins 3151, Barrio Oña, Córdoba Capital. L-V 8 a 17:30. Solo cuando el pedido está listo.
-- Pagos: efectivo (local), transferencia (10% descuento), MercadoPago, tarjetas. Hasta 3 cuotas sin interés en Tienda Nube.
-- Criptomonedas: NO se aceptan.
-- Ventas mayoristas: SÍ existen, pero derivar a asesor con frase exacta.
-- Factura A, cuenta corriente, condiciones especiales: derivar a asesor con frase exacta.
-- Producto roto/defectuoso/incompleto: derivar a asesor DE INMEDIATO con frase exacta, sin pedir más datos.
+KNOWLEDGE BASE DEL BOT: la knowledge base real y completa del bot está incluida al final de este prompt. Es la información que el bot SÍ tiene disponible siempre, sin tool_result.
 
-IMPORTANTE: Si tool_result es null pero la respuesta usa información de la knowledge base de arriba, NO es alucinación.
+IMPORTANTE: Si tool_result es null pero la respuesta usa información que figura en la knowledge base del final, NO es alucinación. Verificá siempre contra esa knowledge base antes de marcar una alucinación.
 
 ESCALA DE EVALUACIÓN:
 5 = respuesta perfecta, cumple todos los criterios

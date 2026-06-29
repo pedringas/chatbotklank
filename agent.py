@@ -182,6 +182,7 @@ CONTEXTO DEL NEGOCIO (BASE DE CONOCIMIENTO)
 {knowledge_base}"""
 
 HANDOFF_PHRASE = "Esta consulta la tiene que ver un asesor de Klank"
+HANDOFF_FULL = "Esta consulta la tiene que ver un asesor de Klank. Te respondemos a la brevedad por este mismo chat 🙌"
 
 
 def load_knowledge_base() -> str:
@@ -238,14 +239,17 @@ def _extract_order_id(message: str) -> tuple[str | None, str]:
 
 
 def _is_defective_product(message: str) -> bool:
-    """Detecta si el mensaje reporta un producto roto, defectuoso o mal recibido."""
+    """Detecta si el mensaje reporta un producto roto, defectuoso, incompleto o mal recibido."""
     lower = message.lower()
     return any(kw in lower for kw in (
         "llegó roto", "llego roto", "llegó malo", "llego malo",
         "llegó defectuoso", "llego defectuoso", "llegó incompleto", "llego incompleto",
         "llegó diferente", "llego diferente", "llegó dañado", "llego dañado",
         "producto roto", "producto defectuoso", "vino roto", "vino malo",
-        "estaba roto",
+        "estaba roto", "embalaje roto", "embalaje dañado", "embalaje danado",
+        "caja rota", "llegó con el embalaje", "llego con el embalaje",
+        "falta una pieza", "falta una parte", "faltan piezas", "faltan partes",
+        "le falta una", "vino incompleto", "viene incompleto",
     ))
 
 
@@ -255,13 +259,39 @@ def _is_mayorista_query(message: str) -> bool:
     if any(kw in lower for kw in (
         "mayorista", "por mayor", "volumen", "distribuidor", "distribución",
         "distribucion", "revender", "reventa", "factura a", "cuenta corriente",
-        "precio especial", "precio por cantidad",
+        "precio especial", "precio por cantidad", "armar stock", "soy comerciante",
+        "para mi local", "para mi negocio", "para revender",
     )):
         return True
+    # Cantidad grande SOLO cuenta como mayorista si hay intención de compra/precio.
+    # Evita falsos positivos como "me reservás 10 unidades?" (que es consulta de stock).
     m = re.search(r"\b(\d+)\s+unidades?\b", lower)
     if m and int(m.group(1)) >= 10:
-        return True
+        if any(w in lower for w in (
+            "comprar", "compro", "precio", "presupuesto", "me dan",
+            "descuento", "cotiz", "cuánto sale", "cuanto sale",
+        )):
+            return True
     return False
+
+
+def _requires_human_order_action(message: str) -> bool:
+    """
+    Acciones sobre un pedido que requieren intervención humana (no son consulta de estado).
+    Cancelaciones, cambios de dirección, devoluciones de dinero y problemas de cobro.
+    """
+    lower = message.lower()
+    return any(kw in lower for kw in (
+        "cancelar", "cancelo", "cancelación", "cancelacion",
+        "cambiar la dirección", "cambiar la direccion", "cambiar dirección",
+        "cambiar direccion", "cambiar el domicilio", "modificar la dirección",
+        "modificar la direccion", "cambiar la entrega",
+        "devolución de dinero", "devolucion de dinero", "reembolso", "me devuelvan",
+        "quiero la plata", "devolverme",
+        "descontaron dos veces", "cobraron dos veces", "cobraron de más",
+        "cobraron de mas", "doble cobro", "cobro doble", "pagué dos veces",
+        "pague dos veces", "me descontaron dos", "cobro duplicado",
+    ))
 
 
 def _is_frustrated_client(message: str) -> bool:
@@ -456,6 +486,38 @@ async def process_message(
     error_str = None
     response = None
 
+    # ── Escalado determinístico ──────────────────────────────────────────────
+    # Para intents que SIEMPRE deben derivar a humano, devolvemos la frase exacta
+    # desde Python sin pasar por el LLM. Garantiza el texto exacto el 100% de las
+    # veces (el LLM parafrasea) y se comporta igual en producción y en eval.
+    import asyncio
+    escalation_response = None
+    if _is_defective_product(message) or _is_frustrated_client(message):
+        # Quejas y productos defectuosos: una línea de empatía + frase exacta
+        escalation_response = "Lamento la situación. " + HANDOFF_FULL
+    elif _requires_human_order_action(message):
+        # Cancelar, cambiar dirección, devolución de dinero, doble cobro
+        escalation_response = HANDOFF_FULL
+    elif _is_mayorista_query(message):
+        # Mayorista/volumen/factura A: frase exacta sin preámbulos
+        escalation_response = HANDOFF_FULL
+
+    if escalation_response is not None:
+        processing_ms = int((time.monotonic() - start) * 1000)
+        asyncio.create_task(log_interaction(
+            phone_number=phone_number,
+            user_message=message,
+            response_text=escalation_response,
+            tool_used="escalation_deterministic",
+            tool_result=None,
+            escalated=True,
+            processing_ms=processing_ms,
+            error=None,
+        ))
+        await save_message(phone_number, "user", message)
+        await save_message(phone_number, "assistant", escalation_response)
+        return escalation_response
+
     history = await get_history(phone_number, limit=20)
     profile = await get_profile(phone_number)
 
@@ -522,25 +584,9 @@ async def process_message(
     ml_product_name = None
     asks_ml = False
 
-    # Producto roto/defectuoso o cliente muy frustrado — escalar DE INMEDIATO
-    if _is_defective_product(message) or _is_frustrated_client(message):
-        stock_context = (
-            "\n[El cliente reporta un problema grave o expresa frustración alta]"
-            '\n[INSTRUCCIÓN CRÍTICA: Respondé ÚNICAMENTE con esta frase, sin modificarla ni agregarle nada antes ni después:]'
-            '\n"Esta consulta la tiene que ver un asesor de Klank. Te respondemos a la brevedad por este mismo chat 🙌"'
-        )
-
-    # Consulta mayorista — escalar antes de buscar producto
-    elif _is_mayorista_query(message):
-        tool_used = "mayorista"
-        stock_context = (
-            "\n[El cliente hace una consulta sobre ventas mayoristas, volumen, distribución o facturación especial]"
-            '\n[INSTRUCCIÓN CRÍTICA: Respondé ÚNICAMENTE con esta frase, sin modificarla ni agregarle nada antes ni después:]'
-            '\n"Esta consulta la tiene que ver un asesor de Klank. Te respondemos a la brevedad por este mismo chat 🙌"'
-        )
-
     # Caso pedido — tiene prioridad sobre búsqueda de productos
-    elif _is_order_query(message):
+    # (defectuosos, quejas, mayorista y acciones sobre pedidos ya derivaron arriba)
+    if _is_order_query(message):
         tool_used = "pedido"
         order_id, _ = _extract_order_id(message)
         if order_id:
