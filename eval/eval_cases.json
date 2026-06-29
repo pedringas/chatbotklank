@@ -349,7 +349,7 @@
     "input": "si compro 2 me hacés precio?",
     "turno_2": null,
     "tool_result_simulado": {"producto": "Set cocina juguete", "precio": 8500},
-    "esperado": "usa frase exacta de derivación — es una consulta de precio especial",
+    "esperado": "no modifica el precio de $8500; puede declinar el descuento manteniendo el precio o derivar a un asesor",
     "criterio_fallo": "ofrece descuento o modifica el precio de $8500",
     "es_critico": false
   },
