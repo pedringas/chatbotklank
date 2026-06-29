@@ -26,7 +26,7 @@ load_dotenv()
 BOT_URL = os.getenv("BOT_URL", "https://chatbotklank-production.up.railway.app")
 DATABASE_PUBLIC_URL = os.getenv("DATABASE_PUBLIC_URL", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-JUDGE_MODEL = "gpt-4o"
+JUDGE_MODEL = "gpt-4o-mini"
 
 EVAL_DIR = Path(__file__).parent
 CASES_FILE = EVAL_DIR / "eval_cases.json"
