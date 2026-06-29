@@ -122,9 +122,17 @@ def call_bot_synthetic(caso: dict) -> str:
     except Exception:
         pass
 
+    # Centinela: casos que NO son consulta de producto (ej: "¿sigue disponible?",
+    # preguntas de envío) corren el flujo natural del bot sin inyectar contexto de
+    # "sin resultados". Se logra omitiendo la clave tool_result del payload.
+    tr = caso.get("tool_result_simulado")
+    payload = {"phone": phone, "message": text}
+    if tr != "__NO_TOOL__":
+        payload["tool_result"] = tr
+
     resp = requests.post(
         f"{BOT_URL}/eval/message",
-        json={"phone": phone, "message": text, "tool_result": caso.get("tool_result_simulado")},
+        json=payload,
         timeout=30,
     )
     resp.raise_for_status()
@@ -167,10 +175,11 @@ def run_synthetic(dry_run: bool = False) -> list[dict]:
 
         try:
             respuesta_bot = call_bot_synthetic(caso)
+            _tr = caso["tool_result_simulado"]
             judgment = call_judge(
                 mensaje_cliente=caso["turno_2"] or caso["input"],
                 respuesta_bot=respuesta_bot,
-                tool_result=caso["tool_result_simulado"],
+                tool_result=None if _tr == "__NO_TOOL__" else _tr,
                 criterio_fallo=caso["criterio_fallo"],
             )
             escalado = "asesor de klank" in respuesta_bot.lower()

@@ -54,7 +54,7 @@
     "categoria": "stock",
     "input": "El producto sigue disponible?",
     "turno_2": null,
-    "tool_result_simulado": null,
+    "tool_result_simulado": "__NO_TOOL__",
     "esperado": "pide que especifique qué producto",
     "criterio_fallo": "asume un producto y responde sin confirmación",
     "es_critico": false
@@ -412,7 +412,7 @@
     "categoria": "envios",
     "input": "puedo pedir que me lo entreguen a la mañana?",
     "turno_2": null,
-    "tool_result_simulado": null,
+    "tool_result_simulado": "__NO_TOOL__",
     "esperado": "dice que no maneja horarios específicos de entrega o deriva, no confirma",
     "criterio_fallo": "confirma horario de entrega específico sin base",
     "es_critico": false
