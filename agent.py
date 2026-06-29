@@ -40,6 +40,31 @@ def _pick_response_model(message: str, context: str) -> str:
         return SENSITIVE_MODEL
     return DEFAULT_MODEL
 
+
+async def _generate_response(messages: list, message: str, context: str) -> str:
+    """
+    Genera la respuesta con el modelo elegido. Si el modelo sensible (gpt-4o) falla
+    por cualquier motivo (rate limit, error transitorio), degrada automáticamente a
+    gpt-4o-mini en vez de tirarle un error al cliente.
+    NOTA: si la cuota de TODA la cuenta está agotada (insufficient_quota), ambos
+    modelos fallan porque comparten el mismo crédito — eso solo se resuelve cargando
+    saldo en OpenAI.
+    """
+    primary = _pick_response_model(message, context)
+    try:
+        completion = await _openai.chat.completions.create(
+            model=primary, messages=messages, max_tokens=400, temperature=0.7,
+        )
+        return completion.choices[0].message.content.strip()
+    except Exception as e:
+        if primary != DEFAULT_MODEL:
+            logger.warning("Modelo %s falló (%s); reintento con %s", primary, e, DEFAULT_MODEL)
+            completion = await _openai.chat.completions.create(
+                model=DEFAULT_MODEL, messages=messages, max_tokens=400, temperature=0.7,
+            )
+            return completion.choices[0].message.content.strip()
+        raise
+
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 _admin_sessions: set[str] = set()  # números de WhatsApp con sesión admin activa
 
@@ -583,13 +608,7 @@ async def process_message(
         messages_llm.append({"role": "user", "content": user_content})
         import asyncio
         try:
-            completion = await _openai.chat.completions.create(
-                model=_pick_response_model(message, stock_context),
-                messages=messages_llm,
-                max_tokens=400,
-                temperature=0.7,
-            )
-            response = completion.choices[0].message.content.strip()
+            response = await _generate_response(messages_llm, message, stock_context)
             escalated = needs_human_handoff(response)
         except Exception as e:
             error_str = str(e)
@@ -796,13 +815,7 @@ async def process_message(
 
     import asyncio
     try:
-        completion = await _openai.chat.completions.create(
-            model=_pick_response_model(message, stock_context),
-            messages=messages,
-            max_tokens=400,
-            temperature=0.7,
-        )
-        response = completion.choices[0].message.content.strip()
+        response = await _generate_response(messages, message, stock_context)
         escalated = needs_human_handoff(response)
     except Exception as e:
         logger.error("Error llamando a OpenAI: %s", e)
