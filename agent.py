@@ -249,6 +249,21 @@ def _is_defective_product(message: str) -> bool:
     ))
 
 
+def _is_mayorista_query(message: str) -> bool:
+    """Detecta consultas de venta mayorista, volumen, distribución o facturación especial."""
+    lower = message.lower()
+    if any(kw in lower for kw in (
+        "mayorista", "por mayor", "volumen", "distribuidor", "distribución",
+        "distribucion", "revender", "reventa", "factura a", "cuenta corriente",
+        "precio especial", "precio por cantidad",
+    )):
+        return True
+    m = re.search(r"\b(\d+)\s+unidades?\b", lower)
+    if m and int(m.group(1)) >= 10:
+        return True
+    return False
+
+
 def _is_frustrated_client(message: str) -> bool:
     """Detecta mensajes con tono agresivo o de alto nivel de frustración."""
     lower = message.lower()
@@ -511,7 +526,17 @@ async def process_message(
     if _is_defective_product(message) or _is_frustrated_client(message):
         stock_context = (
             "\n[El cliente reporta un problema grave o expresa frustración alta]"
-            "\n[IMPORTANTE: Usar EXACTAMENTE la frase de derivación a humano. No pidas número de orden ni más datos. Tono empático.]"
+            '\n[INSTRUCCIÓN CRÍTICA: Respondé ÚNICAMENTE con esta frase, sin modificarla ni agregarle nada antes ni después:]'
+            '\n"Esta consulta la tiene que ver un asesor de Klank. Te respondemos a la brevedad por este mismo chat 🙌"'
+        )
+
+    # Consulta mayorista — escalar antes de buscar producto
+    elif _is_mayorista_query(message):
+        tool_used = "mayorista"
+        stock_context = (
+            "\n[El cliente hace una consulta sobre ventas mayoristas, volumen, distribución o facturación especial]"
+            '\n[INSTRUCCIÓN CRÍTICA: Respondé ÚNICAMENTE con esta frase, sin modificarla ni agregarle nada antes ni después:]'
+            '\n"Esta consulta la tiene que ver un asesor de Klank. Te respondemos a la brevedad por este mismo chat 🙌"'
         )
 
     # Caso pedido — tiene prioridad sobre búsqueda de productos
