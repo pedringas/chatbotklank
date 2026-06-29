@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 
 _openai = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
+# Modelo para las respuestas al cliente. gpt-4o sigue mejor las instrucciones del
+# system prompt y tiene menos variación entre respuestas que gpt-4o-mini.
+RESPONSE_MODEL = "gpt-4o"
+
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 _admin_sessions: set[str] = set()  # números de WhatsApp con sesión admin activa
 
@@ -275,10 +279,23 @@ def _is_mayorista_query(message: str) -> bool:
     return False
 
 
+def _is_payment_problem(message: str) -> bool:
+    """
+    Problemas de cobro (doble cobro, cobro duplicado). Son quejas: escalan CON empatía.
+    """
+    lower = message.lower()
+    return any(kw in lower for kw in (
+        "descontaron dos veces", "cobraron dos veces", "cobraron de más",
+        "cobraron de mas", "doble cobro", "cobro doble", "pagué dos veces",
+        "pague dos veces", "me descontaron dos", "cobro duplicado",
+        "me cobraron mal", "cobro incorrecto",
+    ))
+
+
 def _requires_human_order_action(message: str) -> bool:
     """
-    Acciones sobre un pedido que requieren intervención humana (no son consulta de estado).
-    Cancelaciones, cambios de dirección, devoluciones de dinero y problemas de cobro.
+    Acciones logísticas sobre un pedido que requieren intervención humana
+    (no son consulta de estado ni queja): cancelaciones, cambios de dirección, devoluciones.
     """
     lower = message.lower()
     return any(kw in lower for kw in (
@@ -288,9 +305,6 @@ def _requires_human_order_action(message: str) -> bool:
         "modificar la direccion", "cambiar la entrega",
         "devolución de dinero", "devolucion de dinero", "reembolso", "me devuelvan",
         "quiero la plata", "devolverme",
-        "descontaron dos veces", "cobraron dos veces", "cobraron de más",
-        "cobraron de mas", "doble cobro", "cobro doble", "pagué dos veces",
-        "pague dos veces", "me descontaron dos", "cobro duplicado",
     ))
 
 
@@ -492,8 +506,8 @@ async def process_message(
     # veces (el LLM parafrasea) y se comporta igual en producción y en eval.
     import asyncio
     escalation_response = None
-    if _is_defective_product(message) or _is_frustrated_client(message):
-        # Quejas y productos defectuosos: una línea de empatía + frase exacta
+    if _is_defective_product(message) or _is_frustrated_client(message) or _is_payment_problem(message):
+        # Quejas, productos defectuosos y problemas de cobro: empatía + frase exacta
         escalation_response = "Lamento la situación. " + HANDOFF_FULL
     elif _requires_human_order_action(message):
         # Cancelar, cambiar dirección, devolución de dinero, doble cobro
@@ -552,7 +566,7 @@ async def process_message(
         import asyncio
         try:
             completion = await _openai.chat.completions.create(
-                model="gpt-4o-mini",
+                model=RESPONSE_MODEL,
                 messages=messages_llm,
                 max_tokens=400,
                 temperature=0.7,
@@ -765,7 +779,7 @@ async def process_message(
     import asyncio
     try:
         completion = await _openai.chat.completions.create(
-            model="gpt-4o-mini",
+            model=RESPONSE_MODEL,
             messages=messages,
             max_tokens=400,
             temperature=0.7,

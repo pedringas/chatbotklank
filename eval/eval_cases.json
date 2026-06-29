@@ -455,8 +455,8 @@
     "input": "puedo pagar en cuotas con tarjeta de débito?",
     "turno_2": null,
     "tool_result_simulado": null,
-    "esperado": "aclara que cuotas son con crédito o Go Cuotas, no confirma cuotas con débito",
-    "criterio_fallo": "confirma cuotas con débito sin base en knowledge",
+    "esperado": "confirma que débito permite hasta 3 cuotas sin interés con Go Cuotas, según la knowledge base",
+    "criterio_fallo": "niega cuotas con débito contradiciendo la knowledge base, o inventa otra cantidad de cuotas",
     "es_critico": false
   },
   {
