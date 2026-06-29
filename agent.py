@@ -18,9 +18,27 @@ logger = logging.getLogger(__name__)
 
 _openai = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-# Modelo para las respuestas al cliente. gpt-4o sigue mejor las instrucciones del
-# system prompt y tiene menos variación entre respuestas que gpt-4o-mini.
-RESPONSE_MODEL = "gpt-4o"
+# Modelos para las respuestas al cliente. Por defecto gpt-4o-mini (barato y
+# suficiente). gpt-4o solo en casos sensibles de precio, donde mini se equivoca
+# (comparación tienda oficial vs MercadoLibre, o disputa/corrección de precio).
+DEFAULT_MODEL = "gpt-4o-mini"
+SENSITIVE_MODEL = "gpt-4o"
+
+
+def _pick_response_model(message: str, context: str) -> str:
+    """Elige gpt-4o solo cuando la respuesta involucra precios sensibles."""
+    low = (message + " " + (context or "")).lower()
+    # Comparación de precios (ambas tiendas presentes en el contexto verificado)
+    if "mercadolibre" in low and ("tienda oficial" in low or "precio_tn" in low):
+        return SENSITIVE_MODEL
+    # Cliente disputa o corrige un precio
+    if any(kw in low for kw in (
+        "más barato", "mas barato", "más caro", "mas caro",
+        "está mal el precio", "esta mal el precio", "no es el precio",
+        "el precio es otro", "ese no es el precio", "me cobraste de más",
+    )):
+        return SENSITIVE_MODEL
+    return DEFAULT_MODEL
 
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 _admin_sessions: set[str] = set()  # números de WhatsApp con sesión admin activa
@@ -566,7 +584,7 @@ async def process_message(
         import asyncio
         try:
             completion = await _openai.chat.completions.create(
-                model=RESPONSE_MODEL,
+                model=_pick_response_model(message, stock_context),
                 messages=messages_llm,
                 max_tokens=400,
                 temperature=0.7,
@@ -779,7 +797,7 @@ async def process_message(
     import asyncio
     try:
         completion = await _openai.chat.completions.create(
-            model=RESPONSE_MODEL,
+            model=_pick_response_model(message, stock_context),
             messages=messages,
             max_tokens=400,
             temperature=0.7,
