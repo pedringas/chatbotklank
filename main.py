@@ -451,11 +451,22 @@ async def eval_message(request: Request):
         return JSONResponse({"error": "message requerido"}, status_code=400)
 
     # Formatear tool_result como stock_context si se provee
+    # Distinguimos "clave ausente" (no bypass) de "clave presente pero null" (bypass sin resultados)
     stock_context_override = None
-    if tool_result is not None:
-        import json as _json
+    if "tool_result" in body:
         if tool_result:
-            lines = [f"- {k}: {v}" for k, v in tool_result.items()]
+            # Formatear precios TN/ML con etiquetas claras para evitar inversiones
+            if "precio_tn" in tool_result or "precio_ml" in tool_result:
+                lines = []
+                if "precio_tn" in tool_result:
+                    lines.append(f"- Precio en tienda oficial: ${tool_result['precio_tn']}")
+                if "precio_ml" in tool_result:
+                    lines.append(f"- Precio en MercadoLibre: ${tool_result['precio_ml']}")
+                for k, v in tool_result.items():
+                    if k not in ("precio_tn", "precio_ml"):
+                        lines.append(f"- {k}: {v}")
+            else:
+                lines = [f"- {k}: {v}" for k, v in tool_result.items()]
             stock_context_override = (
                 "\n[Datos simulados para evaluación]\n"
                 + "\n".join(lines)
