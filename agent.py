@@ -103,7 +103,7 @@ REGLAS INAMOVIBLES:
 - REGLA ABSOLUTA: JAMÁS menciones un producto, precio o link que no esté en el bloque [Resultados verificados...] del mensaje actual. Esos son los ÚNICOS productos que existís para vos en este momento. No construyas URLs. No combines nombres de productos con slugs. Si no hay bloque de resultados, no podés nombrar ningún producto específico
 - Si el cliente pide filtrar por precio (ej: "menos de $10000"), solo mostrá los productos del bloque de resultados que cumplan ese criterio. Si ninguno cumple, decí honestamente que no encontraste opciones en ese rango
 - Si el cliente pide una categoría amplia ("juguetes para nena"), preguntá qué producto específico busca antes de buscar
-- Si la búsqueda no devuelve resultados, decí honestamente que no encontraste ese producto y pedile al cliente que reformule la búsqueda o que te dé más detalles. Nunca inventes alternativas
+- Si la búsqueda no devuelve resultados, decí honestamente que no encontraste ese producto. No ofrezcas alternativas con precio — si querés sugerir buscar otra cosa, hacelo sin mencionar ningún producto específico ni precio
 - Si no entendés bien lo que pide el cliente, pedile que lo reformule antes de buscar
 - Si la búsqueda falla por error técnico, derivá a un asesor
 - Cuando no tenés información suficiente para responder con certeza, decí "No tengo ese dato, ¿podés darme más detalles?" — nunca rellenes con suposiciones
@@ -218,8 +218,12 @@ def _extract_order_id(message: str) -> tuple[str | None, str]:
     Extrae un número de orden del mensaje.
     Retorna (order_id, source) donde source es 'tiendanube', 'mercadolibre' o 'unknown'.
     """
-    # Número de orden explícito con prefijo
-    m = re.search(r"(?:orden|pedido|compra|n[uú]mero)[^\d]*(\d{5,})", message.lower())
+    # Número con # o prefijo explícito (4+ dígitos)
+    m = re.search(r"#(\d{4,})", message)
+    if m:
+        return m.group(1), "unknown"
+    # Número de orden con prefijo textual
+    m = re.search(r"(?:orden|pedido|compra|n[uú]mero)[^\d]*(\d{4,})", message.lower())
     if m:
         return m.group(1), "unknown"
     # Número solo de 5+ dígitos
@@ -227,6 +231,18 @@ def _extract_order_id(message: str) -> tuple[str | None, str]:
     if m:
         return m.group(1), "unknown"
     return None, "unknown"
+
+
+def _is_defective_product(message: str) -> bool:
+    """Detecta si el mensaje reporta un producto roto, defectuoso o mal recibido."""
+    lower = message.lower()
+    return any(kw in lower for kw in (
+        "llegó roto", "llego roto", "llegó malo", "llego malo",
+        "llegó defectuoso", "llego defectuoso", "llegó incompleto", "llego incompleto",
+        "llegó diferente", "llego diferente", "llegó dañado", "llego dañado",
+        "producto roto", "producto defectuoso", "vino roto", "vino malo",
+        "estaba roto", "estaba roto",
+    ))
 
 
 def _is_order_query(message: str) -> bool:
@@ -476,8 +492,15 @@ async def process_message(
     ml_product_name = None
     asks_ml = False
 
+    # Producto roto/defectuoso — escalar DE INMEDIATO sin buscar número de orden
+    if _is_defective_product(message):
+        stock_context = (
+            "\n[El cliente reporta un producto roto, defectuoso o incompleto]"
+            "\n[IMPORTANTE: Usar EXACTAMENTE la frase de derivación a humano. No pidas número de orden ni más datos.]"
+        )
+
     # Caso pedido — tiene prioridad sobre búsqueda de productos
-    if _is_order_query(message):
+    elif _is_order_query(message):
         tool_used = "pedido"
         order_id, _ = _extract_order_id(message)
         if order_id:
