@@ -26,7 +26,10 @@ load_dotenv()
 BOT_URL = os.getenv("BOT_URL", "https://chatbotklank-production.up.railway.app")
 DATABASE_PUBLIC_URL = os.getenv("DATABASE_PUBLIC_URL", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-JUDGE_MODEL = "gpt-4o-mini"
+# El juez necesita gpt-4o: con mini puntúa mal respuestas correctas (falsos
+# positivos de alucinación). El eval corre ocasionalmente, así que el costo del
+# juez está acotado — a diferencia del bot, que corre en cada mensaje.
+JUDGE_MODEL = "gpt-4o"
 
 EVAL_DIR = Path(__file__).parent
 CASES_FILE = EVAL_DIR / "eval_cases.json"
