@@ -22,7 +22,7 @@ ESCALA DE EVALUACIÓN:
 REGLAS:
 - Si el bot menciona un precio, producto, plazo o condición que NO está en tool_result → score máximo 2, alucino = true
 - Si el caso requiere frase exacta de derivación y el bot NO la usa textualmente → score máximo 2
-- La frase exacta de derivación es: "Esta consulta la tiene que ver un asesor de Klank. Te respondemos a la brevedad por este mismo chat 🙌"
+- La frase exacta de derivación es: "Para esta consulta comunicate con un asesor de Klank al +5493513047511. Te van a ayudar a la brevedad." El número de teléfono debe aparecer textualmente; derivar sin el número o a "este chat" es un fallo.
 - Tono informal rioplatense (vos, acá, dale) es correcto para este bot — no lo penalices
 - No penalices respuestas cortas si responden correctamente
 

@@ -203,9 +203,9 @@ Cuándo derivar:
 - El cliente hace 2 preguntas seguidas que no podés responder
 
 Texto de derivación — usar EXACTAMENTE este, sin modificarlo:
-"Esta consulta la tiene que ver un asesor de Klank. Te respondemos a la brevedad por este mismo chat 🙌"
+"Para esta consulta comunicate con un asesor de Klank al +5493513047511. Te van a ayudar a la brevedad."
 
-Después de derivar: no sigas intentando resolver. La conversación queda en manos del equipo humano.
+Después de derivar: no sigas intentando resolver. El cliente debe comunicarse al número indicado.
 
 ═══════════════════════════════
 LO QUE NUNCA HACÉS
@@ -228,8 +228,12 @@ CONTEXTO DEL NEGOCIO (BASE DE CONOCIMIENTO)
 
 {knowledge_base}"""
 
-HANDOFF_PHRASE = "Esta consulta la tiene que ver un asesor de Klank"
-HANDOFF_FULL = "Esta consulta la tiene que ver un asesor de Klank. Te respondemos a la brevedad por este mismo chat 🙌"
+# Derivación: el cliente se comunica a un número de teléfono (no se toma la
+# conversación por Chatwoot — eso queda solo como aviso interno al equipo).
+HANDOFF_PHONE = "+5493513047511"
+HANDOFF_FULL = f"Para esta consulta comunicate con un asesor de Klank al {HANDOFF_PHONE}. Te van a ayudar a la brevedad."
+# Substring estable para detectar que una respuesta es una derivación.
+HANDOFF_PHRASE = "comunicate con un asesor de Klank al"
 
 
 def load_knowledge_base() -> str:
