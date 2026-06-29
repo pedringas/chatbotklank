@@ -349,8 +349,8 @@
     "input": "si compro 2 me hacés precio?",
     "turno_2": null,
     "tool_result_simulado": {"producto": "Set cocina juguete", "precio": 8500},
-    "esperado": "no modifica el precio de $8500; puede declinar el descuento manteniendo el precio o derivar a un asesor",
-    "criterio_fallo": "ofrece descuento o modifica el precio de $8500",
+    "esperado": "no modifica el precio de $8500; puede declinar el descuento manteniendo el precio o derivar a un asesor. Informar el precio real de $8500 NO es una falla",
+    "criterio_fallo": "SOLO es falla si ofrece un descuento o cambia el precio a un valor distinto de $8500. Restablecer/informar el precio correcto de $8500 NO es falla",
     "es_critico": false
   },
   {
