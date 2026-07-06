@@ -13,6 +13,7 @@ from config import OPENAI_API_KEY
 from memory import get_history, save_message, get_profile, save_profile
 from tools import search_products, get_product_by_id_ml, search_mercadolibre, get_order_tiendanube, get_order_mercadolibre
 from agent_logger import log_interaction
+from guardrails import validate_response
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +235,39 @@ HANDOFF_PHONE = "+5493513047511"
 HANDOFF_FULL = f"Para esta consulta comunicate con un asesor de Klank al {HANDOFF_PHONE}. Te van a ayudar a la brevedad."
 # Substring estable para detectar que una respuesta es una derivación.
 HANDOFF_PHRASE = "comunicate con un asesor de Klank al"
+
+
+async def _generate_validated_response(
+    messages: list,
+    message: str,
+    stock_context: str,
+    tool_result,
+) -> tuple[str, str | None, bool]:
+    """
+    Genera una respuesta y la valida con el guardrail anti-alucinaciones.
+    Si la validación falla, reintenta UNA vez pidiendo corrección explícita;
+    si vuelve a fallar, deriva a un asesor humano.
+    Retorna (respuesta, nota_guardrail | None, handoff_forzado).
+    """
+    response = await _generate_response(messages, message, stock_context)
+    ok, reason = validate_response(response, stock_context, tool_result)
+    if ok:
+        return response, None, False
+
+    logger.warning("Guardrail rechazó respuesta (%s); reintentando", reason)
+    retry_messages = [dict(m) for m in messages]
+    retry_messages[-1]["content"] += (
+        f"\n[CORRECCIÓN: tu respuesta anterior incluyó datos no verificados ({reason}). "
+        "Respondé de nuevo usando SOLO precios y links que aparezcan textualmente en el "
+        "contexto verificado. Si no tenés el dato, no lo inventes.]"
+    )
+    retry = await _generate_response(retry_messages, message, stock_context)
+    ok, retry_reason = validate_response(retry, stock_context, tool_result)
+    if ok:
+        return retry, f"guardrail: {reason} (recuperado)", False
+
+    logger.warning("Guardrail rechazó también el reintento (%s); handoff", retry_reason)
+    return HANDOFF_FULL, f"guardrail: {reason} (handoff)", True
 
 
 def load_knowledge_base() -> str:
@@ -612,8 +646,11 @@ async def process_message(
         messages_llm.append({"role": "user", "content": user_content})
         import asyncio
         try:
-            response = await _generate_response(messages_llm, message, stock_context)
-            escalated = needs_human_handoff(response)
+            response, guardrail_note, forced_handoff = await _generate_validated_response(
+                messages_llm, message, stock_context, tool_result=None
+            )
+            escalated = forced_handoff or needs_human_handoff(response)
+            error_str = guardrail_note
         except Exception as e:
             error_str = str(e)
             response = "Tuve un problema técnico. Intentá de nuevo en unos minutos."
@@ -819,8 +856,11 @@ async def process_message(
 
     import asyncio
     try:
-        response = await _generate_response(messages, message, stock_context)
-        escalated = needs_human_handoff(response)
+        response, guardrail_note, forced_handoff = await _generate_validated_response(
+            messages, message, stock_context, tool_result
+        )
+        escalated = forced_handoff or needs_human_handoff(response)
+        error_str = guardrail_note
     except Exception as e:
         logger.error("Error llamando a OpenAI: %s", e)
         error_str = str(e)
