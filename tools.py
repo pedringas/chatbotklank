@@ -201,6 +201,14 @@ def _parse_tn_products(data: list) -> list:
         link = item.get("canonical_url") or item.get("permalink", "")
         sku = variant.get("sku", "")
         title = item.get("name", {}).get("es", "") or str(item.get("name", ""))
+        # Nombres de categorías (los usa catalog.py para alternativas afines)
+        categories = []
+        for cat in item.get("categories") or []:
+            cat_name = cat.get("name")
+            if isinstance(cat_name, dict):
+                cat_name = cat_name.get("es", "")
+            if cat_name:
+                categories.append(str(cat_name))
         logger.info("TN producto: '%s' | precio=%s | stock=%s", title, price, variant.get("stock"))
         products.append({
             "title": title,
@@ -209,6 +217,7 @@ def _parse_tn_products(data: list) -> list:
             "permalink": link,
             "thumbnail": image,
             "sku": sku,
+            "categories": categories,
         })
     return products
 
