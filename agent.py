@@ -270,6 +270,53 @@ async def _generate_validated_response(
     return HANDOFF_FULL, f"guardrail: {reason} (handoff)", True
 
 
+def format_stock_context(tool_result: dict | None) -> str:
+    """
+    Formatea un tool_result estilo eval como el bloque canónico de contexto
+    verificado que ve el LLM. Única fuente de verdad del formato para el eval:
+    eval/run_eval.py la importa y manda el resultado como stock_context_override,
+    así el bot y el juez ven exactamente los mismos datos.
+    NOTA: los branches de producción de process_message arman sus bloques propios
+    (un formato por tool); no se retrofitean a esta función en esta sesión.
+    """
+    if not tool_result:
+        return (
+            "\n[Búsqueda realizada: sin resultados para este producto en ninguna fuente]"
+            "\n[IMPORTANTE: No inventes productos ni links. Decí honestamente que no "
+            "encontraste ese producto en este momento.]"
+        )
+    # Comparación de precios TN/ML — las etiquetas "tienda oficial" y "MercadoLibre"
+    # también hacen que _pick_response_model rutee al modelo sensible (gpt-4o).
+    if "precio_tn" in tool_result or "precio_ml" in tool_result:
+        lines = []
+        if "precio_tn" in tool_result:
+            lines.append(f"- Precio en tienda oficial: ${tool_result['precio_tn']}")
+        if "precio_ml" in tool_result:
+            lines.append(f"- Precio en MercadoLibre: ${tool_result['precio_ml']}")
+        for k, v in tool_result.items():
+            if k not in ("precio_tn", "precio_ml"):
+                lines.append(f"- {k}: {v}")
+        return (
+            "\n[Resultados verificados en tienda oficial y MercadoLibre]\n"
+            + "\n".join(lines)
+            + "\n[IMPORTANTE: Usá estos precios exactos con sus etiquetas. "
+            "No los inviertas ni inventes información adicional.]"
+        )
+    # Caso general: producto/precio/stock u otras claves sueltas.
+    # Los precios llevan $ para que el guardrail los reconozca como verificados.
+    lines = []
+    for k, v in tool_result.items():
+        if k.startswith("precio") and v is not None:
+            lines.append(f"- {k}: ${v}")
+        else:
+            lines.append(f"- {k}: {v}")
+    return (
+        "\n[Resultados verificados en nuestra tienda]\n"
+        + "\n".join(lines)
+        + "\n[IMPORTANTE: Usá solo estos datos exactos. No inventes información adicional.]"
+    )
+
+
 def load_knowledge_base() -> str:
     """
     Lee todos los .md de /knowledge/ y los concatena.

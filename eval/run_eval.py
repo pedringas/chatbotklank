@@ -21,6 +21,11 @@ from jinja2 import Environment, FileSystemLoader
 
 load_dotenv()
 
+# Importar la función compartida de formato desde agent.py (raíz del proyecto):
+# bot y juez deben ver exactamente el mismo contexto verificado.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from agent import format_stock_context  # noqa: E402
+
 # ─── Config ──────────────────────────────────────────────────────────────────
 
 BOT_URL = os.getenv("BOT_URL", "https://chatbotklank-production.up.railway.app")
@@ -106,11 +111,10 @@ def call_judge(
 def call_bot_synthetic(caso: dict) -> str:
     """
     Llama al bot real via HTTP con el mensaje del cliente.
-    El tool_result_simulado se incluye como contexto en el mensaje para guiar
-    la búsqueda — en modo sintético el bot hace una búsqueda real o responde
-    según su knowledge base.
-    Nota: el bot no recibe el tool_result_simulado directamente; este campo
-    se usa solo por el judge para evaluar si el bot alucinó datos no disponibles.
+    El tool_result_simulado se formatea con agent.format_stock_context (la misma
+    función que define el bloque canónico de contexto) y se manda como
+    stock_context_override — así el bot ve EXACTAMENTE los mismos datos que
+    después recibe el juez como tool_result.
     """
     phone = TEST_PHONE
     text = caso["input"]
@@ -127,11 +131,11 @@ def call_bot_synthetic(caso: dict) -> str:
 
     # Centinela: casos que NO son consulta de producto (ej: "¿sigue disponible?",
     # preguntas de envío) corren el flujo natural del bot sin inyectar contexto de
-    # "sin resultados". Se logra omitiendo la clave tool_result del payload.
+    # "sin resultados". Se logra omitiendo el override del payload.
     tr = caso.get("tool_result_simulado")
     payload = {"phone": phone, "message": text}
     if tr != "__NO_TOOL__":
-        payload["tool_result"] = tr
+        payload["stock_context_override"] = format_stock_context(tr)
 
     resp = requests.post(
         f"{BOT_URL}/eval/message",
@@ -141,11 +145,15 @@ def call_bot_synthetic(caso: dict) -> str:
     resp.raise_for_status()
     bot_response = resp.json().get("response", "")
 
-    # Segundo turno si existe (sin tool_result — simula respuesta sin contexto de búsqueda)
+    # Segundo turno si existe (sin resultados — simula respuesta sin contexto de búsqueda)
     if caso.get("turno_2"):
         resp2 = requests.post(
             f"{BOT_URL}/eval/message",
-            json={"phone": phone, "message": caso["turno_2"], "tool_result": {}},
+            json={
+                "phone": phone,
+                "message": caso["turno_2"],
+                "stock_context_override": format_stock_context(None),
+            },
             timeout=30,
         )
         resp2.raise_for_status()
@@ -327,9 +335,10 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
 <div class="meta">{{ run_at }} · {{ results|length }} casos evaluados</div>
 
 <div class="summary">
-  <div class="stat"><div class="val">{{ avg_score }}</div><div class="lbl">Score promedio</div></div>
-  <div class="stat"><div class="val" style="color:#dc2626">{{ total_alucinaciones }}</div><div class="lbl">Alucinaciones</div></div>
+  <div class="stat"><div class="val" style="color:{{ '#dc2626' if total_alucinaciones else '#16a34a' }}">{{ pct_alucinaciones }}%</div><div class="lbl">Alucinaciones ({{ total_alucinaciones }}) — meta 0%</div></div>
+  <div class="stat"><div class="val" style="color:{{ '#dc2626' if score_bajo else '#16a34a' }}">{{ pct_score_bajo }}%</div><div class="lbl">Score ≤ 2 ({{ score_bajo }})</div></div>
   <div class="stat"><div class="val" style="color:#dc2626">{{ criticos_fallidos }}</div><div class="lbl">Críticos fallidos</div></div>
+  <div class="stat"><div class="val" style="color:#64748b">{{ avg_score }}</div><div class="lbl">Score promedio (secundario)</div></div>
   {% for cat, avg in cat_scores.items() %}
   <div class="stat"><div class="val">{{ avg }}</div><div class="lbl">{{ cat }}</div></div>
   {% endfor %}
@@ -393,6 +402,11 @@ def generate_report(results: list[dict], mode: str, dry_run: bool = False) -> Pa
 
     total_alucinaciones = sum(1 for r in results if r.get("alucino"))
     criticos_fallidos = sum(1 for r in results if r.get("es_critico") and (r.get("score") or 5) < 3)
+    # Métricas principales: % alucinaciones (meta 0%) y % score ≤ 2.
+    # El promedio esconde fallos binarios detrás de casos fáciles — queda secundario.
+    score_bajo = sum(1 for r in scored if r["score"] <= 2)
+    pct_alucinaciones = round(100 * total_alucinaciones / len(scored), 1) if scored else 0
+    pct_score_bajo = round(100 * score_bajo / len(scored), 1) if scored else 0
 
     env = Environment()
     tmpl = env.from_string(REPORT_TEMPLATE)
@@ -403,6 +417,9 @@ def generate_report(results: list[dict], mode: str, dry_run: bool = False) -> Pa
         avg_score=avg_score,
         cat_scores=cat_scores,
         total_alucinaciones=total_alucinaciones,
+        pct_alucinaciones=pct_alucinaciones,
+        score_bajo=score_bajo,
+        pct_score_bajo=pct_score_bajo,
         criticos_fallidos=criticos_fallidos,
     )
     out.write_text(html, encoding="utf-8")
@@ -434,6 +451,17 @@ def main():
         webbrowser.open(report_path.as_uri())
     except Exception:
         pass
+
+    # Gate: cualquier alucinación es un fallo del run completo (meta 0%)
+    alucinados = [r for r in results if r.get("alucino")]
+    if alucinados:
+        print(f"\nGATE FALLIDO: {len(alucinados)} caso(s) con alucinación:")
+        for r in alucinados:
+            print(f"\n  [{r.get('id', r.get('timestamp', '?'))}]")
+            print(f"  Mensaje:       {r.get('input', '')}")
+            print(f"  Respuesta:     {r.get('respuesta_bot', '')}")
+            print(f"  Justificación: {r.get('justificacion', '')}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
