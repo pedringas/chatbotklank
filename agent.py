@@ -3,6 +3,7 @@ Lógica central del agente Klank.
 Orquesta LLM, tools de stock, historial de conversación y base de conocimiento.
 """
 
+import asyncio
 import logging
 import os
 import glob
@@ -54,14 +55,14 @@ async def _generate_response(messages: list, message: str, context: str) -> str:
     primary = _pick_response_model(message, context)
     try:
         completion = await _openai.chat.completions.create(
-            model=primary, messages=messages, max_tokens=400, temperature=0.7,
+            model=primary, messages=messages, max_tokens=400, temperature=0.3,
         )
         return completion.choices[0].message.content.strip()
     except Exception as e:
         if primary != DEFAULT_MODEL:
             logger.warning("Modelo %s falló (%s); reintento con %s", primary, e, DEFAULT_MODEL)
             completion = await _openai.chat.completions.create(
-                model=DEFAULT_MODEL, messages=messages, max_tokens=400, temperature=0.7,
+                model=DEFAULT_MODEL, messages=messages, max_tokens=400, temperature=0.3,
             )
             return completion.choices[0].message.content.strip()
         raise
@@ -632,7 +633,6 @@ async def process_message(
     # Para intents que SIEMPRE deben derivar a humano, devolvemos la frase exacta
     # desde Python sin pasar por el LLM. Garantiza el texto exacto el 100% de las
     # veces (el LLM parafrasea) y se comporta igual en producción y en eval.
-    import asyncio
     escalation_response = None
     if _is_defective_product(message) or _is_frustrated_client(message) or _is_payment_problem(message):
         # Quejas, productos defectuosos y problemas de cobro: empatía + frase exacta
@@ -691,7 +691,6 @@ async def process_message(
         messages_llm = [{"role": "system", "content": system}]
         messages_llm.extend(history)
         messages_llm.append({"role": "user", "content": user_content})
-        import asyncio
         try:
             response, guardrail_note, forced_handoff = await _generate_validated_response(
                 messages_llm, message, stock_context, tool_result=None
@@ -901,7 +900,6 @@ async def process_message(
     messages.extend(history)
     messages.append({"role": "user", "content": user_content})
 
-    import asyncio
     try:
         response, guardrail_note, forced_handoff = await _generate_validated_response(
             messages, message, stock_context, tool_result
