@@ -22,6 +22,7 @@ from config import (
     ENVIRONMENT,
 )
 from memory import init_db
+from tools import load_ml_token
 from agent import process_message, needs_human_handoff, load_knowledge_base, _is_product_query, format_stock_context
 from chatwoot import (
     create_or_get_contact,
@@ -41,6 +42,7 @@ WHATSAPP_API_URL = (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    await load_ml_token()  # retomar el último token ML renovado (kv_store)
     load_knowledge_base()
     if not META_APP_SECRET:
         logger.error(

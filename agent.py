@@ -18,7 +18,8 @@ from guardrails import validate_response
 
 logger = logging.getLogger(__name__)
 
-_openai = AsyncOpenAI(api_key=OPENAI_API_KEY)
+# max_retries=2: el SDK reintenta con backoff ante 429/errores transitorios
+_openai = AsyncOpenAI(api_key=OPENAI_API_KEY, max_retries=2)
 
 # Modelos para las respuestas al cliente. Por defecto gpt-4o-mini (barato y
 # suficiente). gpt-4o solo en casos sensibles de precio, donde mini se equivoca
@@ -55,14 +56,14 @@ async def _generate_response(messages: list, message: str, context: str) -> str:
     primary = _pick_response_model(message, context)
     try:
         completion = await _openai.chat.completions.create(
-            model=primary, messages=messages, max_tokens=400, temperature=0.3,
+            model=primary, messages=messages, max_tokens=600, temperature=0.3,
         )
         return completion.choices[0].message.content.strip()
     except Exception as e:
         if primary != DEFAULT_MODEL:
             logger.warning("Modelo %s falló (%s); reintento con %s", primary, e, DEFAULT_MODEL)
             completion = await _openai.chat.completions.create(
-                model=DEFAULT_MODEL, messages=messages, max_tokens=400, temperature=0.3,
+                model=DEFAULT_MODEL, messages=messages, max_tokens=600, temperature=0.3,
             )
             return completion.choices[0].message.content.strip()
         raise
@@ -964,7 +965,7 @@ async def _update_profile(phone_number: str, user_message: str, bot_response: st
                 notes=data.get("notes"),
             )
     except Exception as e:
-        logger.debug("No se pudo actualizar perfil para %s: %s", phone_number, e)
+        logger.warning("No se pudo actualizar perfil para %s: %s", phone_number, e)
 
 
 def needs_human_handoff(response: str) -> bool:

@@ -42,6 +42,32 @@ async def _sqlite_init() -> None:
                 updated_at   TEXT NOT NULL
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS agent_logs (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone_number   TEXT NOT NULL,
+                direction      TEXT,
+                user_message   TEXT,
+                tool_used      TEXT,
+                tool_result    TEXT,
+                response_text  TEXT,
+                escalated      INTEGER DEFAULT 0,
+                processing_ms  INTEGER,
+                error          TEXT,
+                prompt_version TEXT,
+                timestamp      TEXT NOT NULL DEFAULT (datetime('now')),
+                evaluated      TEXT,
+                judge_score    INTEGER,
+                judge_note     TEXT
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS kv_store (
+                key        TEXT PRIMARY KEY,
+                value      TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
         await db.commit()
     logger.info("SQLite inicializado (modo local)")
 
@@ -136,6 +162,37 @@ async def _pg_init() -> None:
                 updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
+        # agent_logs versionada acá — antes se creaba a mano en la consola de
+        # Railway, y en un entorno nuevo el logging fallaba silenciosamente.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS agent_logs (
+                id             BIGSERIAL PRIMARY KEY,
+                phone_number   TEXT NOT NULL,
+                direction      TEXT,
+                user_message   TEXT,
+                tool_used      TEXT,
+                tool_result    TEXT,
+                response_text  TEXT,
+                escalated      BOOLEAN DEFAULT FALSE,
+                processing_ms  INTEGER,
+                error          TEXT,
+                prompt_version TEXT,
+                timestamp      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                evaluated      TIMESTAMPTZ,
+                judge_score    INTEGER,
+                judge_note     TEXT
+            )
+        """)
+        # Columnas de eval sobre la tabla preexistente de Railway (no-op si ya están)
+        for col, typ in (("evaluated", "TIMESTAMPTZ"), ("judge_score", "INTEGER"), ("judge_note", "TEXT")):
+            await conn.execute(f"ALTER TABLE agent_logs ADD COLUMN IF NOT EXISTS {col} {typ}")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS kv_store (
+                key        TEXT PRIMARY KEY,
+                value      TEXT NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
     logger.info("PostgreSQL inicializado correctamente")
 
 
@@ -191,6 +248,48 @@ async def _pg_save_profile(phone_number: str, name: str | None, preferences: str
 
 
 # ─── Interfaz pública ─────────────────────────────────────────────────────────
+
+def is_postgres() -> bool:
+    """True si init_db conectó a PostgreSQL (se resuelve al arrancar)."""
+    return _USE_POSTGRES
+
+
+async def kv_get(key: str) -> str | None:
+    """Lee un valor persistente del kv_store (ej: tokens renovados de ML)."""
+    if _USE_POSTGRES:
+        try:
+            pool = await _pg_get_pool()
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT value FROM kv_store WHERE key = $1", key)
+            return row["value"] if row else None
+        except Exception as e:
+            logger.error("Error leyendo kv_store[%s] de PG: %s", key, e)
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT value FROM kv_store WHERE key = ?", (key,))
+        row = await cursor.fetchone()
+    return row[0] if row else None
+
+
+async def kv_set(key: str, value: str) -> None:
+    """Guarda un valor persistente en el kv_store."""
+    if _USE_POSTGRES:
+        try:
+            pool = await _pg_get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO kv_store (key, value, updated_at) VALUES ($1, $2, NOW())
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+                """, key, value)
+            return
+        except Exception as e:
+            logger.error("Error guardando kv_store[%s] en PG: %s", key, e)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO kv_store (key, value, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+        """, (key, value, datetime.utcnow().isoformat()))
+        await db.commit()
+
 
 async def init_db() -> None:
     global _USE_POSTGRES
