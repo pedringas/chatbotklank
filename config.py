@@ -53,5 +53,12 @@ CHATWOOT_API_TOKEN: str = _cfg["CHATWOOT_API_TOKEN"]
 CHATWOOT_INBOX_ID: str = _cfg["CHATWOOT_INBOX_ID"]
 CHATWOOT_ACCOUNT_ID: str = _cfg["CHATWOOT_ACCOUNT_ID"]
 
+# Secreto de la app de Meta para verificar la firma HMAC del webhook.
+# Opcional por ahora (no está en REQUIRED_VARS) para no romper producción antes
+# de configurarlo en Railway. Si está vacío, la verificación de firma se saltea
+# y se loguea un ERROR al arrancar.
+# TODO: mover a REQUIRED_VARS una vez configurado META_APP_SECRET en Railway.
+META_APP_SECRET: str = os.getenv("META_APP_SECRET", "")
+
 PORT: int = int(os.getenv("PORT", "8000"))
 ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")

@@ -168,8 +168,7 @@ async def _tn_search_raw(query: str, headers: dict, url: str) -> list:
 
 async def search_tiendanube(query: str) -> dict:
     """
-    Busca productos en Tienda Nube.
-    Hace dos pasadas: por frase exacta y por SKU si aplica.
+    Busca productos en Tienda Nube por texto.
     Retorna hasta 3 productos ordenando los que tienen stock primero.
     """
     tn_token = os.getenv("TN_ACCESS_TOKEN", TN_ACCESS_TOKEN)
@@ -181,12 +180,9 @@ async def search_tiendanube(query: str) -> dict:
     }
 
     try:
-        # Búsqueda principal por nombre/query
+        # Búsqueda por texto. La API de TN (GET /products) solo soporta el filtro
+        # `q`; no existe filtro por SKU, así que no hay segunda pasada posible.
         raw = await _tn_search_raw(query, headers, url)
-
-        # Si la query parece un SKU (alfanumérico corto), buscar también por SKU
-        if not raw and len(query) <= 20 and query.replace("-", "").replace("_", "").isalnum():
-            raw = await _tn_search_raw(query, headers, url)
 
         if not raw:
             return {"source": "tiendanube", "products": []}
@@ -301,21 +297,23 @@ async def get_order_mercadolibre(order_id: str) -> dict:
             resp.raise_for_status()
             d = resp.json()
 
-        shipment_id = d.get("shipping", {}).get("id")
-        tracking_number = None
-        tracking_url = None
-        if shipment_id:
-            try:
-                sh = await client.get(
-                    f"https://api.mercadolibre.com/shipments/{shipment_id}",
-                    headers=_ml_headers(),
-                )
-                if sh.is_success:
-                    sh_data = sh.json()
-                    tracking_number = sh_data.get("tracking_number")
-                    tracking_url = sh_data.get("tracking_url")
-            except Exception:
-                pass
+            # La consulta del shipment debe correr con el cliente todavía abierto;
+            # fuera del async with el cliente está cerrado y el tracking se pierde.
+            shipment_id = d.get("shipping", {}).get("id")
+            tracking_number = None
+            tracking_url = None
+            if shipment_id:
+                try:
+                    sh = await client.get(
+                        f"https://api.mercadolibre.com/shipments/{shipment_id}",
+                        headers=_ml_headers(),
+                    )
+                    if sh.is_success:
+                        sh_data = sh.json()
+                        tracking_number = sh_data.get("tracking_number")
+                        tracking_url = sh_data.get("tracking_url")
+                except Exception:
+                    pass
 
         status_map = {
             "confirmed": "Confirmado",

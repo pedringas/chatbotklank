@@ -3,6 +3,7 @@ Lógica central del agente Klank.
 Orquesta LLM, tools de stock, historial de conversación y base de conocimiento.
 """
 
+import asyncio
 import logging
 import os
 import glob
@@ -13,6 +14,7 @@ from config import OPENAI_API_KEY
 from memory import get_history, save_message, get_profile, save_profile
 from tools import search_products, get_product_by_id_ml, search_mercadolibre, get_order_tiendanube, get_order_mercadolibre
 from agent_logger import log_interaction
+from guardrails import validate_response
 
 logger = logging.getLogger(__name__)
 
@@ -53,14 +55,14 @@ async def _generate_response(messages: list, message: str, context: str) -> str:
     primary = _pick_response_model(message, context)
     try:
         completion = await _openai.chat.completions.create(
-            model=primary, messages=messages, max_tokens=400, temperature=0.7,
+            model=primary, messages=messages, max_tokens=400, temperature=0.3,
         )
         return completion.choices[0].message.content.strip()
     except Exception as e:
         if primary != DEFAULT_MODEL:
             logger.warning("Modelo %s falló (%s); reintento con %s", primary, e, DEFAULT_MODEL)
             completion = await _openai.chat.completions.create(
-                model=DEFAULT_MODEL, messages=messages, max_tokens=400, temperature=0.7,
+                model=DEFAULT_MODEL, messages=messages, max_tokens=400, temperature=0.3,
             )
             return completion.choices[0].message.content.strip()
         raise
@@ -234,6 +236,86 @@ HANDOFF_PHONE = "+5493513047511"
 HANDOFF_FULL = f"Para esta consulta comunicate con un asesor de Klank al {HANDOFF_PHONE}. Te van a ayudar a la brevedad."
 # Substring estable para detectar que una respuesta es una derivación.
 HANDOFF_PHRASE = "comunicate con un asesor de Klank al"
+
+
+async def _generate_validated_response(
+    messages: list,
+    message: str,
+    stock_context: str,
+    tool_result,
+) -> tuple[str, str | None, bool]:
+    """
+    Genera una respuesta y la valida con el guardrail anti-alucinaciones.
+    Si la validación falla, reintenta UNA vez pidiendo corrección explícita;
+    si vuelve a fallar, deriva a un asesor humano.
+    Retorna (respuesta, nota_guardrail | None, handoff_forzado).
+    """
+    response = await _generate_response(messages, message, stock_context)
+    ok, reason = validate_response(response, stock_context, tool_result)
+    if ok:
+        return response, None, False
+
+    logger.warning("Guardrail rechazó respuesta (%s); reintentando", reason)
+    retry_messages = [dict(m) for m in messages]
+    retry_messages[-1]["content"] += (
+        f"\n[CORRECCIÓN: tu respuesta anterior incluyó datos no verificados ({reason}). "
+        "Respondé de nuevo usando SOLO precios y links que aparezcan textualmente en el "
+        "contexto verificado. Si no tenés el dato, no lo inventes.]"
+    )
+    retry = await _generate_response(retry_messages, message, stock_context)
+    ok, retry_reason = validate_response(retry, stock_context, tool_result)
+    if ok:
+        return retry, f"guardrail: {reason} (recuperado)", False
+
+    logger.warning("Guardrail rechazó también el reintento (%s); handoff", retry_reason)
+    return HANDOFF_FULL, f"guardrail: {reason} (handoff)", True
+
+
+def format_stock_context(tool_result: dict | None) -> str:
+    """
+    Formatea un tool_result estilo eval como el bloque canónico de contexto
+    verificado que ve el LLM. Única fuente de verdad del formato para el eval:
+    eval/run_eval.py la importa y manda el resultado como stock_context_override,
+    así el bot y el juez ven exactamente los mismos datos.
+    NOTA: los branches de producción de process_message arman sus bloques propios
+    (un formato por tool); no se retrofitean a esta función en esta sesión.
+    """
+    if not tool_result:
+        return (
+            "\n[Búsqueda realizada: sin resultados para este producto en ninguna fuente]"
+            "\n[IMPORTANTE: No inventes productos ni links. Decí honestamente que no "
+            "encontraste ese producto en este momento.]"
+        )
+    # Comparación de precios TN/ML — las etiquetas "tienda oficial" y "MercadoLibre"
+    # también hacen que _pick_response_model rutee al modelo sensible (gpt-4o).
+    if "precio_tn" in tool_result or "precio_ml" in tool_result:
+        lines = []
+        if "precio_tn" in tool_result:
+            lines.append(f"- Precio en tienda oficial: ${tool_result['precio_tn']}")
+        if "precio_ml" in tool_result:
+            lines.append(f"- Precio en MercadoLibre: ${tool_result['precio_ml']}")
+        for k, v in tool_result.items():
+            if k not in ("precio_tn", "precio_ml"):
+                lines.append(f"- {k}: {v}")
+        return (
+            "\n[Resultados verificados en tienda oficial y MercadoLibre]\n"
+            + "\n".join(lines)
+            + "\n[IMPORTANTE: Usá estos precios exactos con sus etiquetas. "
+            "No los inviertas ni inventes información adicional.]"
+        )
+    # Caso general: producto/precio/stock u otras claves sueltas.
+    # Los precios llevan $ para que el guardrail los reconozca como verificados.
+    lines = []
+    for k, v in tool_result.items():
+        if k.startswith("precio") and v is not None:
+            lines.append(f"- {k}: ${v}")
+        else:
+            lines.append(f"- {k}: {v}")
+    return (
+        "\n[Resultados verificados en nuestra tienda]\n"
+        + "\n".join(lines)
+        + "\n[IMPORTANTE: Usá solo estos datos exactos. No inventes información adicional.]"
+    )
 
 
 def load_knowledge_base() -> str:
@@ -551,7 +633,6 @@ async def process_message(
     # Para intents que SIEMPRE deben derivar a humano, devolvemos la frase exacta
     # desde Python sin pasar por el LLM. Garantiza el texto exacto el 100% de las
     # veces (el LLM parafrasea) y se comporta igual en producción y en eval.
-    import asyncio
     escalation_response = None
     if _is_defective_product(message) or _is_frustrated_client(message) or _is_payment_problem(message):
         # Quejas, productos defectuosos y problemas de cobro: empatía + frase exacta
@@ -610,10 +691,12 @@ async def process_message(
         messages_llm = [{"role": "system", "content": system}]
         messages_llm.extend(history)
         messages_llm.append({"role": "user", "content": user_content})
-        import asyncio
         try:
-            response = await _generate_response(messages_llm, message, stock_context)
-            escalated = needs_human_handoff(response)
+            response, guardrail_note, forced_handoff = await _generate_validated_response(
+                messages_llm, message, stock_context, tool_result=None
+            )
+            escalated = forced_handoff or needs_human_handoff(response)
+            error_str = guardrail_note
         except Exception as e:
             error_str = str(e)
             response = "Tuve un problema técnico. Intentá de nuevo en unos minutos."
@@ -817,10 +900,12 @@ async def process_message(
     messages.extend(history)
     messages.append({"role": "user", "content": user_content})
 
-    import asyncio
     try:
-        response = await _generate_response(messages, message, stock_context)
-        escalated = needs_human_handoff(response)
+        response, guardrail_note, forced_handoff = await _generate_validated_response(
+            messages, message, stock_context, tool_result
+        )
+        escalated = forced_handoff or needs_human_handoff(response)
+        error_str = guardrail_note
     except Exception as e:
         logger.error("Error llamando a OpenAI: %s", e)
         error_str = str(e)
