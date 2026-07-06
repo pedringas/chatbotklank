@@ -3,6 +3,9 @@ Servidor FastAPI. Maneja el webhook de Meta/WhatsApp y expone /health.
 Siempre retorna 200 a Meta para evitar reintentos; errores internos se loguean.
 """
 
+import hashlib
+import hmac
+import json
 import logging
 import os
 import httpx
@@ -14,6 +17,7 @@ from config import (
     META_VERIFY_TOKEN,
     META_ACCESS_TOKEN,
     META_PHONE_NUMBER_ID,
+    META_APP_SECRET,
     PORT,
     ENVIRONMENT,
 )
@@ -38,6 +42,12 @@ WHATSAPP_API_URL = (
 async def lifespan(app: FastAPI):
     await init_db()
     load_knowledge_base()
+    if not META_APP_SECRET:
+        logger.error(
+            "META_APP_SECRET no está configurado — la verificación de firma del "
+            "webhook está DESHABILITADA. Cualquiera con la URL puede inyectar "
+            "mensajes falsos. TODO: configurar META_APP_SECRET en Railway y hacerlo obligatorio."
+        )
     logger.info("Klank Agent iniciado correctamente en puerto %s", PORT)
     yield
 
@@ -64,11 +74,38 @@ async def verify_webhook(request: Request):
 
 # ─── Recepción de mensajes (POST) ─────────────────────────────────────────────
 
+def _verify_meta_signature(raw_body: bytes, signature_header: str | None) -> bool:
+    """
+    Verifica la firma HMAC-SHA256 que Meta envía en X-Hub-Signature-256.
+    La firma se calcula sobre el body crudo (bytes), por eso NO se debe parsear
+    y re-serializar antes de verificar. Comparación en tiempo constante.
+    """
+    if not signature_header or not signature_header.startswith("sha256="):
+        return False
+    received = signature_header.split("=", 1)[1]
+    expected = hmac.new(
+        META_APP_SECRET.encode("utf-8"), raw_body, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(received, expected)
+
+
 @app.post("/webhook")
 async def receive_webhook(request: Request):
+    # La firma se calcula sobre el body CRUDO — hay que leer los bytes antes de parsear.
+    raw_body = await request.body()
+
+    # Verificación de firma. Si META_APP_SECRET no está configurado, se saltea
+    # (ya se logueó ERROR al arrancar) para no romper producción antes de setearlo.
+    if META_APP_SECRET:
+        signature = request.headers.get("X-Hub-Signature-256")
+        if not _verify_meta_signature(raw_body, signature):
+            client_ip = request.client.host if request.client else "desconocida"
+            logger.warning("Webhook con firma inválida — IP de origen: %s", client_ip)
+            return Response(status_code=403)
+
     # Meta espera siempre 200; los errores internos se loguean sin propagar
     try:
-        body = await request.json()
+        body = json.loads(raw_body)
         await _handle_webhook(body)
     except Exception as e:
         logger.error("Error procesando webhook: %s", e)
