@@ -12,6 +12,8 @@ PROMPT_VERSION = "v2"  # v2: alternativas verificadas del catálogo ante falta d
 _COLUMNS = (
     "phone_number", "direction", "user_message", "tool_used", "tool_result",
     "response_text", "escalated", "processing_ms", "error", "prompt_version",
+    "search_query", "results_count", "alternatives_count",
+    "tokens_in", "tokens_out", "model", "kb_gap",
 )
 
 
@@ -24,10 +26,19 @@ async def log_interaction(
     escalated: bool = False,
     processing_ms: int = None,
     error: str = None,
+    direction: str = "inbound",
+    prompt_version: str = None,
+    search_query: str = None,
+    results_count: int = None,
+    alternatives_count: int = None,
+    tokens_in: int = None,
+    tokens_out: int = None,
+    model: str = None,
+    kb_gap: bool = False,
 ) -> None:
     values = (
         phone_number,
-        "inbound",
+        direction,
         user_message,
         tool_used,
         json.dumps(tool_result) if tool_result else None,
@@ -35,7 +46,14 @@ async def log_interaction(
         escalated,
         processing_ms,
         error,
-        PROMPT_VERSION,
+        prompt_version or PROMPT_VERSION,
+        search_query,
+        results_count,
+        alternatives_count,
+        tokens_in,
+        tokens_out,
+        model,
+        kb_gap,
     )
     try:
         if memory.is_postgres():

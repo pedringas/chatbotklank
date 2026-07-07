@@ -46,11 +46,22 @@ def _pick_response_model(message: str, context: str) -> str:
     return DEFAULT_MODEL
 
 
-async def _generate_response(messages: list, message: str, context: str) -> str:
+def _usage_meta(completion, model: str) -> dict:
+    """Extrae modelo y tokens de una respuesta de OpenAI (para agent_logs)."""
+    usage = getattr(completion, "usage", None)
+    return {
+        "model": model,
+        "tokens_in": getattr(usage, "prompt_tokens", None),
+        "tokens_out": getattr(usage, "completion_tokens", None),
+    }
+
+
+async def _generate_response(messages: list, message: str, context: str) -> tuple[str, dict]:
     """
     Genera la respuesta con el modelo elegido. Si el modelo sensible (gpt-4o) falla
     por cualquier motivo (rate limit, error transitorio), degrada automáticamente a
     gpt-4o-mini en vez de tirarle un error al cliente.
+    Retorna (texto, meta) con meta = {model, tokens_in, tokens_out}.
     NOTA: si la cuota de TODA la cuenta está agotada (insufficient_quota), ambos
     modelos fallan porque comparten el mismo crédito — eso solo se resuelve cargando
     saldo en OpenAI.
@@ -60,14 +71,14 @@ async def _generate_response(messages: list, message: str, context: str) -> str:
         completion = await _openai.chat.completions.create(
             model=primary, messages=messages, max_tokens=600, temperature=0.3,
         )
-        return completion.choices[0].message.content.strip()
+        return completion.choices[0].message.content.strip(), _usage_meta(completion, primary)
     except Exception as e:
         if primary != DEFAULT_MODEL:
             logger.warning("Modelo %s falló (%s); reintento con %s", primary, e, DEFAULT_MODEL)
             completion = await _openai.chat.completions.create(
                 model=DEFAULT_MODEL, messages=messages, max_tokens=600, temperature=0.3,
             )
-            return completion.choices[0].message.content.strip()
+            return completion.choices[0].message.content.strip(), _usage_meta(completion, DEFAULT_MODEL)
         raise
 
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
@@ -246,17 +257,18 @@ async def _generate_validated_response(
     message: str,
     stock_context: str,
     tool_result,
-) -> tuple[str, str | None, bool]:
+) -> tuple[str, str | None, bool, dict]:
     """
     Genera una respuesta y la valida con el guardrail anti-alucinaciones.
     Si la validación falla, reintenta UNA vez pidiendo corrección explícita;
     si vuelve a fallar, deriva a un asesor humano.
-    Retorna (respuesta, nota_guardrail | None, handoff_forzado).
+    Retorna (respuesta, nota_guardrail | None, handoff_forzado, meta_llm).
+    meta_llm acumula tokens de ambos intentos.
     """
-    response = await _generate_response(messages, message, stock_context)
+    response, meta = await _generate_response(messages, message, stock_context)
     ok, reason = validate_response(response, stock_context, tool_result)
     if ok:
-        return response, None, False
+        return response, None, False, meta
 
     logger.warning("Guardrail rechazó respuesta (%s); reintentando", reason)
     retry_messages = [dict(m) for m in messages]
@@ -265,13 +277,18 @@ async def _generate_validated_response(
         "Respondé de nuevo usando SOLO precios y links que aparezcan textualmente en el "
         "contexto verificado. Si no tenés el dato, no lo inventes.]"
     )
-    retry = await _generate_response(retry_messages, message, stock_context)
+    retry, meta2 = await _generate_response(retry_messages, message, stock_context)
+    meta = {
+        "model": meta2["model"],
+        "tokens_in": (meta["tokens_in"] or 0) + (meta2["tokens_in"] or 0),
+        "tokens_out": (meta["tokens_out"] or 0) + (meta2["tokens_out"] or 0),
+    }
     ok, retry_reason = validate_response(retry, stock_context, tool_result)
     if ok:
-        return retry, f"guardrail: {reason} (recuperado)", False
+        return retry, f"guardrail: {reason} (recuperado)", False, meta
 
     logger.warning("Guardrail rechazó también el reintento (%s); handoff", retry_reason)
-    return HANDOFF_FULL, f"guardrail: {reason} (handoff)", True
+    return HANDOFF_FULL, f"guardrail: {reason} (handoff)", True, meta
 
 
 def _product_line(p: dict) -> str:
@@ -768,6 +785,8 @@ async def process_message(
     escalated = False
     error_str = None
     response = None
+    search_query_log = None  # qué se buscó (observabilidad)
+    llm_meta = {"model": None, "tokens_in": None, "tokens_out": None}
 
     # ── Escalado determinístico ──────────────────────────────────────────────
     # Para intents que SIEMPRE deben derivar a humano, devolvemos la frase exacta
@@ -832,7 +851,7 @@ async def process_message(
         messages_llm.extend(history)
         messages_llm.append({"role": "user", "content": user_content})
         try:
-            response, guardrail_note, forced_handoff = await _generate_validated_response(
+            response, guardrail_note, forced_handoff, llm_meta = await _generate_validated_response(
                 messages_llm, message, stock_context, tool_result=None
             )
             escalated = forced_handoff or needs_human_handoff(response)
@@ -851,6 +870,9 @@ async def process_message(
                 escalated=escalated,
                 processing_ms=processing_ms,
                 error=error_str,
+                tokens_in=llm_meta["tokens_in"],
+                tokens_out=llm_meta["tokens_out"],
+                model=llm_meta["model"],
             ))
         await save_message(phone_number, "user", message)
         await save_message(phone_number, "assistant", response)
@@ -918,6 +940,7 @@ async def process_message(
                     search_query = q
                     break
         if search_query:
+            search_query_log = search_query
             logger.info("Buscando en MercadoLibre: '%s'", search_query)
             result = await search_mercadolibre(search_query)
             tool_result = result
@@ -942,6 +965,7 @@ async def process_message(
 
     elif klank_product_name:
         tool_used = "tienda_nube"
+        search_query_log = klank_product_name
         # Cliente compartió URL de nuestra tienda — buscar ese producto en TN
         result = await search_products(klank_product_name)
         tool_result = result
@@ -962,6 +986,7 @@ async def process_message(
 
     elif ml_item_id:
         tool_used = "mercadolibre"
+        search_query_log = ml_item_id
         product = await get_product_by_id_ml(ml_item_id)
         tool_result = product
         if "error" not in product:
@@ -983,6 +1008,7 @@ async def process_message(
 
     elif ml_product_name:
         tool_used = "tienda_nube"
+        search_query_log = ml_product_name
         # URL de catálogo ML — buscar por nombre extraído del slug
         result = await search_products(ml_product_name)
         tool_result = result
@@ -1015,6 +1041,7 @@ async def process_message(
         # Consulta de texto — GPT extrae el término, si devuelve vacío no es consulta de producto
         search_query = await _extract_search_query(message)
         if search_query:
+            search_query_log = search_query
             logger.info("Buscando en tiendas: '%s'", search_query)
             result = await search_products(search_query)
             tool_used = result.get("source", "tienda_nube")
@@ -1063,6 +1090,7 @@ async def process_message(
                 tool_used = "recomendaciones"
                 tool_result = reco_result
                 stock_context = reco_block
+                search_query_log = reco_result["criteria"].get("keywords")
 
     user_content = message + stock_context
 
@@ -1071,7 +1099,7 @@ async def process_message(
     messages.append({"role": "user", "content": user_content})
 
     try:
-        response, guardrail_note, forced_handoff = await _generate_validated_response(
+        response, guardrail_note, forced_handoff, llm_meta = await _generate_validated_response(
             messages, message, stock_context, tool_result
         )
         escalated = forced_handoff or needs_human_handoff(response)
@@ -1082,6 +1110,7 @@ async def process_message(
         response = "Tuve un problema técnico. Intentá de nuevo en unos minutos."
     finally:
         processing_ms = int((time.monotonic() - start) * 1000)
+        results_count, alternatives_count = _derive_counts(tool_result)
         asyncio.create_task(log_interaction(
             phone_number=phone_number,
             user_message=message,
@@ -1091,6 +1120,13 @@ async def process_message(
             escalated=escalated,
             processing_ms=processing_ms,
             error=error_str,
+            search_query=search_query_log,
+            results_count=results_count,
+            alternatives_count=alternatives_count,
+            tokens_in=llm_meta["tokens_in"],
+            tokens_out=llm_meta["tokens_out"],
+            model=llm_meta["model"],
+            kb_gap=_detect_kb_gap(tool_used, response),
         ))
 
     await save_message(phone_number, "user", message)
@@ -1140,3 +1176,35 @@ async def _update_profile(phone_number: str, user_message: str, bot_response: st
 def needs_human_handoff(response: str) -> bool:
     """Retorna True si la respuesta contiene la frase de derivación a humano."""
     return HANDOFF_PHRASE in response
+
+
+_KB_GAP_MARKERS = (
+    "no tengo ese dato",
+    "no tengo esa información",
+    "no tengo esa informacion",
+    "no tengo información sobre",
+    "no tengo informacion sobre",
+    "no cuento con esa información",
+    "no cuento con esa informacion",
+)
+
+
+def _derive_counts(tool_result) -> tuple[int | None, int | None]:
+    """(results_count, alternatives_count) desde el tool_result, si aplica."""
+    if isinstance(tool_result, dict):
+        rc = len(tool_result["products"]) if isinstance(tool_result.get("products"), list) else None
+        ac = len(tool_result["alternatives"]) if isinstance(tool_result.get("alternatives"), list) else None
+        return rc, ac
+    return None, None
+
+
+def _detect_kb_gap(tool_used: str | None, response: str) -> bool:
+    """
+    Señal para el dueño: True cuando el bot no pudo responder desde la knowledge
+    base en una consulta que NO era de producto/pedido (tool_used vacío) — o sea,
+    algo que probablemente falte documentar en knowledge/.
+    """
+    if tool_used:
+        return False
+    low = (response or "").lower()
+    return any(m in low for m in _KB_GAP_MARKERS) or HANDOFF_PHRASE in response

@@ -18,6 +18,20 @@ import aiosqlite
 
 DB_PATH = "conversations.db"
 
+# Columnas de observabilidad de agent_logs (M5). Se agregan con ALTER si la
+# tabla ya existía (Railway/SQLite local viejo) y van en el CREATE para
+# instalaciones nuevas. kb_gap y results_count=0 son las señales que dicen
+# qué falta documentar en knowledge/ y dónde falla la búsqueda.
+_AGENT_LOG_EXTRA_COLS = (
+    ("search_query", "TEXT"),
+    ("results_count", "INTEGER"),
+    ("alternatives_count", "INTEGER"),
+    ("tokens_in", "INTEGER"),
+    ("tokens_out", "INTEGER"),
+    ("model", "TEXT"),
+    ("kb_gap", "BOOLEAN"),
+)
+
 
 async def _sqlite_init() -> None:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -61,6 +75,13 @@ async def _sqlite_init() -> None:
                 judge_note     TEXT
             )
         """)
+        # Migración de columnas nuevas para bases locales creadas antes
+        # (SQLite no soporta ADD COLUMN IF NOT EXISTS)
+        cursor = await db.execute("PRAGMA table_info(agent_logs)")
+        existing = {row[1] for row in await cursor.fetchall()}
+        for col, typ in _AGENT_LOG_EXTRA_COLS:
+            if col not in existing:
+                await db.execute(f"ALTER TABLE agent_logs ADD COLUMN {col} {typ}")
         await db.execute("""
             CREATE TABLE IF NOT EXISTS kv_store (
                 key        TEXT PRIMARY KEY,
@@ -183,8 +204,12 @@ async def _pg_init() -> None:
                 judge_note     TEXT
             )
         """)
-        # Columnas de eval sobre la tabla preexistente de Railway (no-op si ya están)
-        for col, typ in (("evaluated", "TIMESTAMPTZ"), ("judge_score", "INTEGER"), ("judge_note", "TEXT")):
+        # Columnas de eval y observabilidad sobre la tabla preexistente de Railway
+        # (no-op si ya están)
+        extra_cols = (
+            ("evaluated", "TIMESTAMPTZ"), ("judge_score", "INTEGER"), ("judge_note", "TEXT"),
+        ) + _AGENT_LOG_EXTRA_COLS
+        for col, typ in extra_cols:
             await conn.execute(f"ALTER TABLE agent_logs ADD COLUMN IF NOT EXISTS {col} {typ}")
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS kv_store (
