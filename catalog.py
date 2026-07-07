@@ -31,6 +31,13 @@ _refresh_lock = asyncio.Lock()
 _PER_PAGE = 200
 _MAX_PAGES = 50  # tope de seguridad (10.000 productos)
 
+# Resumen del catálogo que se inyecta a la knowledge base del bot (M6).
+# Sin precios a propósito: los precios solo pueden venir de los bloques
+# verificados de la conversación (guardrail).
+KNOWLEDGE_SUMMARY_PATH = os.path.join(
+    os.path.dirname(__file__), "knowledge", "catalogo_resumen.md"
+)
+
 # ─── Refresco y acceso ────────────────────────────────────────────────────────
 
 
@@ -88,12 +95,59 @@ async def refresh_catalog(force: bool = False) -> int:
             _catalog = products
             _loaded_at = time.monotonic()
             logger.info("Catálogo TN cacheado: %s productos (%s página/s)", len(products), page)
+            _update_catalog_summary(products)
         else:
             logger.warning(
                 "refresh_catalog devolvió 0 productos — se conserva la copia anterior (%s)",
                 len(_catalog),
             )
         return len(_catalog)
+
+
+def _build_catalog_summary(products: list[dict]) -> str:
+    """Resumen de categorías del catálogo para la knowledge base (sin precios)."""
+    from collections import Counter
+    total = len(products)
+    with_stock = sum(1 for p in products if (p.get("stock") or 0) > 0)
+    cat_total: Counter = Counter()
+    cat_stock: Counter = Counter()
+    for p in products:
+        for c in p.get("categories") or []:
+            cat_total[c] += 1
+            if (p.get("stock") or 0) > 0:
+                cat_stock[c] += 1
+    lines = [
+        "# Catálogo de la tienda — resumen",
+        "",
+        "<!-- AUTOGENERADO por catalog.py en cada refresco del catálogo. NO editar a mano. -->",
+        "",
+        f"Nuestra tienda propia (Tienda Nube) tiene {total} productos publicados, "
+        f"{with_stock} con stock en este momento.",
+        "",
+        "Categorías del catálogo (con stock / total):",
+    ]
+    for cat, count in cat_total.most_common(40):
+        lines.append(f"- {cat}: {cat_stock.get(cat, 0)} con stock / {count} publicados")
+    lines += [
+        "",
+        "IMPORTANTE: este resumen sirve solo para orientar sobre qué tipo de productos "
+        "vendemos. Para nombres, precios y stock exactos SIEMPRE usá los bloques de "
+        "resultados verificados de la conversación — nunca cites precios desde acá.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _update_catalog_summary(products: list[dict]) -> None:
+    """Escribe knowledge/catalogo_resumen.md y recarga la knowledge base cacheada."""
+    try:
+        with open(KNOWLEDGE_SUMMARY_PATH, "w", encoding="utf-8") as f:
+            f.write(_build_catalog_summary(products))
+        # Import diferido: agent importa catalog a nivel módulo (evita el ciclo)
+        from agent import load_knowledge_base
+        load_knowledge_base()
+        logger.info("catalogo_resumen.md regenerado y knowledge base recargada")
+    except Exception as e:
+        logger.warning("No se pudo actualizar catalogo_resumen.md: %s", e)
 
 
 async def get_catalog() -> list[dict]:

@@ -131,15 +131,27 @@ _TN_RAW = [{
 }]
 
 
-def test_refresh_carga_catalogo(monkeypatch):
+def test_refresh_carga_catalogo(monkeypatch, tmp_path):
     monkeypatch.setattr(catalog, "_catalog", [])
     monkeypatch.setattr(catalog, "_loaded_at", 0.0)
+    monkeypatch.setattr(catalog, "KNOWLEDGE_SUMMARY_PATH", str(tmp_path / "catalogo_resumen.md"))
     _patch_client(monkeypatch, _FakeClient([_resp(200, _TN_RAW)]))
 
     count = asyncio.run(catalog.refresh_catalog(force=True))
     assert count == 1
     assert catalog._catalog[0]["title"] == "Pelota de fútbol"
     assert catalog._catalog[0]["categories"] == ["Deportes"]
+    # El refresh regenera el resumen para la knowledge base
+    resumen = (tmp_path / "catalogo_resumen.md").read_text(encoding="utf-8")
+    assert "1 productos publicados" in resumen
+    assert "Deportes" in resumen
+
+
+def test_build_catalog_summary_sin_precios():
+    resumen = catalog._build_catalog_summary(FIXTURE)
+    assert "$" not in resumen  # los precios solo viven en los bloques verificados
+    assert "Juguetes" in resumen
+    assert f"{len(FIXTURE)} productos publicados" in resumen
 
 
 def test_refresh_fallido_conserva_copia_anterior(monkeypatch):

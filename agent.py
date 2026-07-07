@@ -409,7 +409,11 @@ def load_knowledge_base() -> str:
         filename = os.path.basename(path)
         try:
             with open(path, encoding="utf-8") as f:
-                content = f.read().strip()
+                raw = f.read()
+            # Filtrar comentarios HTML (<!-- COMPLETAR: ... -->): son notas para
+            # el dueño, no deben entrar al prompt del bot ni del juez del eval.
+            content = re.sub(r"<!--.*?-->", "", raw, flags=re.DOTALL)
+            content = re.sub(r"\n{3,}", "\n\n", content).strip()
             if content:
                 parts.append(f"## {filename}\n{content}")
         except Exception as e:
