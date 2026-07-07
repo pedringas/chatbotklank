@@ -1,7 +1,7 @@
 """
 Sistema de evaluación automática del agente WhatsApp — Klank
 Uso:
-  python run_eval.py --mode synthetic           # evalúa los 30 casos predefinidos
+  python run_eval.py --mode synthetic           # evalúa todos los casos de eval_cases.json
   python run_eval.py --mode production          # evalúa filas reales de agent_logs
   python run_eval.py --mode synthetic --dry-run # verifica carga sin llamar al bot ni al judge
 """
@@ -159,6 +159,18 @@ def call_bot_synthetic(caso: dict) -> str:
         resp2.raise_for_status()
         bot_response = resp2.json().get("response", "")
 
+    # Turnos adicionales (conversaciones 3+): lista de {"mensaje", "tool_result"}.
+    # Cada turno puede traer su propio tool_result; "__NO_TOOL__" = flujo natural.
+    # Se evalúa la respuesta al ÚLTIMO turno.
+    for turno in caso.get("turnos") or []:
+        tr_turno = turno.get("tool_result", "__NO_TOOL__")
+        payload_turno = {"phone": phone, "message": turno["mensaje"]}
+        if tr_turno != "__NO_TOOL__":
+            payload_turno["stock_context_override"] = format_stock_context(tr_turno)
+        resp_t = requests.post(f"{BOT_URL}/eval/message", json=payload_turno, timeout=30)
+        resp_t.raise_for_status()
+        bot_response = resp_t.json().get("response", "")
+
     return bot_response
 
 
@@ -186,11 +198,18 @@ def run_synthetic(dry_run: bool = False) -> list[dict]:
 
         try:
             respuesta_bot = call_bot_synthetic(caso)
-            _tr = caso["tool_result_simulado"]
+            # El juez evalúa la respuesta al ÚLTIMO turno, con el tool_result de ese turno
+            turnos = caso.get("turnos") or []
+            if turnos:
+                mensaje_judge = turnos[-1]["mensaje"]
+                tr_judge = turnos[-1].get("tool_result", "__NO_TOOL__")
+            else:
+                mensaje_judge = caso["turno_2"] or caso["input"]
+                tr_judge = None if caso["turno_2"] else caso["tool_result_simulado"]
             judgment = call_judge(
-                mensaje_cliente=caso["turno_2"] or caso["input"],
+                mensaje_cliente=mensaje_judge,
                 respuesta_bot=respuesta_bot,
-                tool_result=None if _tr == "__NO_TOOL__" else _tr,
+                tool_result=None if tr_judge == "__NO_TOOL__" else tr_judge,
                 criterio_fallo=caso["criterio_fallo"],
             )
             escalado = "asesor de klank" in respuesta_bot.lower()

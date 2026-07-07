@@ -3,6 +3,7 @@ Servidor FastAPI. Maneja el webhook de Meta/WhatsApp y expone /health.
 Siempre retorna 200 a Meta para evitar reintentos; errores internos se loguean.
 """
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -22,6 +23,8 @@ from config import (
     ENVIRONMENT,
 )
 from memory import init_db
+from tools import load_ml_token
+from catalog import refresh_catalog
 from agent import process_message, needs_human_handoff, load_knowledge_base, _is_product_query, format_stock_context
 from chatwoot import (
     create_or_get_contact,
@@ -41,7 +44,10 @@ WHATSAPP_API_URL = (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    await load_ml_token()  # retomar el último token ML renovado (kv_store)
     load_knowledge_base()
+    # Carga inicial del catálogo TN en background (no bloquea el arranque)
+    asyncio.create_task(refresh_catalog())
     if not META_APP_SECRET:
         logger.error(
             "META_APP_SECRET no está configurado — la verificación de firma del "

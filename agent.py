@@ -4,6 +4,7 @@ Orquesta LLM, tools de stock, historial de conversación y base de conocimiento.
 """
 
 import asyncio
+import json
 import logging
 import os
 import glob
@@ -15,10 +16,12 @@ from memory import get_history, save_message, get_profile, save_profile
 from tools import search_products, get_product_by_id_ml, search_mercadolibre, get_order_tiendanube, get_order_mercadolibre
 from agent_logger import log_interaction
 from guardrails import validate_response
+from catalog import get_catalog, find_alternatives, filter_products
 
 logger = logging.getLogger(__name__)
 
-_openai = AsyncOpenAI(api_key=OPENAI_API_KEY)
+# max_retries=2: el SDK reintenta con backoff ante 429/errores transitorios
+_openai = AsyncOpenAI(api_key=OPENAI_API_KEY, max_retries=2)
 
 # Modelos para las respuestas al cliente. Por defecto gpt-4o-mini (barato y
 # suficiente). gpt-4o solo en casos sensibles de precio, donde mini se equivoca
@@ -43,11 +46,22 @@ def _pick_response_model(message: str, context: str) -> str:
     return DEFAULT_MODEL
 
 
-async def _generate_response(messages: list, message: str, context: str) -> str:
+def _usage_meta(completion, model: str) -> dict:
+    """Extrae modelo y tokens de una respuesta de OpenAI (para agent_logs)."""
+    usage = getattr(completion, "usage", None)
+    return {
+        "model": model,
+        "tokens_in": getattr(usage, "prompt_tokens", None),
+        "tokens_out": getattr(usage, "completion_tokens", None),
+    }
+
+
+async def _generate_response(messages: list, message: str, context: str) -> tuple[str, dict]:
     """
     Genera la respuesta con el modelo elegido. Si el modelo sensible (gpt-4o) falla
     por cualquier motivo (rate limit, error transitorio), degrada automáticamente a
     gpt-4o-mini en vez de tirarle un error al cliente.
+    Retorna (texto, meta) con meta = {model, tokens_in, tokens_out}.
     NOTA: si la cuota de TODA la cuenta está agotada (insufficient_quota), ambos
     modelos fallan porque comparten el mismo crédito — eso solo se resuelve cargando
     saldo en OpenAI.
@@ -55,16 +69,16 @@ async def _generate_response(messages: list, message: str, context: str) -> str:
     primary = _pick_response_model(message, context)
     try:
         completion = await _openai.chat.completions.create(
-            model=primary, messages=messages, max_tokens=400, temperature=0.3,
+            model=primary, messages=messages, max_tokens=600, temperature=0.3,
         )
-        return completion.choices[0].message.content.strip()
+        return completion.choices[0].message.content.strip(), _usage_meta(completion, primary)
     except Exception as e:
         if primary != DEFAULT_MODEL:
             logger.warning("Modelo %s falló (%s); reintento con %s", primary, e, DEFAULT_MODEL)
             completion = await _openai.chat.completions.create(
-                model=DEFAULT_MODEL, messages=messages, max_tokens=400, temperature=0.3,
+                model=DEFAULT_MODEL, messages=messages, max_tokens=600, temperature=0.3,
             )
-            return completion.choices[0].message.content.strip()
+            return completion.choices[0].message.content.strip(), _usage_meta(completion, DEFAULT_MODEL)
         raise
 
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
@@ -149,10 +163,10 @@ Si querés recibir una notificación cuando vuelva a estar disponible, podés se
 REGLAS INAMOVIBLES:
 - Nunca inventés un precio. Si no lo tenés de la API, no lo decís
 - Nunca confirmés stock que no verificaste en tiempo real
-- REGLA ABSOLUTA: JAMÁS menciones un producto, precio o link que no esté en el bloque [Resultados verificados...] del mensaje actual. Esos son los ÚNICOS productos que existís para vos en este momento. No construyas URLs. No combines nombres de productos con slugs. Si no hay bloque de resultados, no podés nombrar ningún producto específico
+- REGLA ABSOLUTA: JAMÁS menciones un producto, precio o link que no esté en los bloques [Resultados verificados...], [ALTERNATIVAS...] o [RECOMENDACIONES...] del mensaje actual. Esos son los ÚNICOS productos que existís para vos en este momento. No construyas URLs. No combines nombres de productos con slugs. Si no hay ninguno de esos bloques, no podés nombrar ningún producto específico
 - Si el cliente pide filtrar por precio (ej: "menos de $10000"), solo mostrá los productos del bloque de resultados que cumplan ese criterio. Si ninguno cumple, decí honestamente que no encontraste opciones en ese rango
-- Si el cliente pide una categoría amplia ("juguetes para nena"), preguntá qué producto específico busca antes de buscar
-- Si la búsqueda no devuelve resultados, decí honestamente que no encontraste ese producto. No ofrezcas alternativas con precio — si querés sugerir buscar otra cosa, hacelo sin mencionar ningún producto específico ni precio
+- Si el cliente pide una categoría amplia ("juguetes para nena") y el contexto incluye un bloque [RECOMENDACIONES verificadas de nuestro catálogo], ofrecé 1 o 2 de esas opciones con su precio y link exactos y preguntá si busca algo de ese estilo. Si NO hay bloque de recomendaciones, preguntá edad, ocasión o presupuesto antes de sugerir
+- Si la búsqueda no devuelve resultados o el producto está sin stock, decilo honestamente. Si el contexto incluye un bloque [ALTERNATIVAS verificadas con stock en nuestra tienda], ofrecé 1 o 2 de esas opciones con su precio y link exactos, presentándolas como algo parecido que sí tenemos. Si NO hay bloque de alternativas, no menciones ningún producto específico ni precio
 - Si no entendés bien lo que pide el cliente, pedile que lo reformule antes de buscar
 - Si la búsqueda falla por error técnico, derivá a un asesor
 - Cuando no tenés información suficiente para responder con certeza, decí "No tengo ese dato, ¿podés darme más detalles?" — nunca rellenes con suposiciones
@@ -243,17 +257,18 @@ async def _generate_validated_response(
     message: str,
     stock_context: str,
     tool_result,
-) -> tuple[str, str | None, bool]:
+) -> tuple[str, str | None, bool, dict]:
     """
     Genera una respuesta y la valida con el guardrail anti-alucinaciones.
     Si la validación falla, reintenta UNA vez pidiendo corrección explícita;
     si vuelve a fallar, deriva a un asesor humano.
-    Retorna (respuesta, nota_guardrail | None, handoff_forzado).
+    Retorna (respuesta, nota_guardrail | None, handoff_forzado, meta_llm).
+    meta_llm acumula tokens de ambos intentos.
     """
-    response = await _generate_response(messages, message, stock_context)
+    response, meta = await _generate_response(messages, message, stock_context)
     ok, reason = validate_response(response, stock_context, tool_result)
     if ok:
-        return response, None, False
+        return response, None, False, meta
 
     logger.warning("Guardrail rechazó respuesta (%s); reintentando", reason)
     retry_messages = [dict(m) for m in messages]
@@ -262,13 +277,60 @@ async def _generate_validated_response(
         "Respondé de nuevo usando SOLO precios y links que aparezcan textualmente en el "
         "contexto verificado. Si no tenés el dato, no lo inventes.]"
     )
-    retry = await _generate_response(retry_messages, message, stock_context)
+    retry, meta2 = await _generate_response(retry_messages, message, stock_context)
+    meta = {
+        "model": meta2["model"],
+        "tokens_in": (meta["tokens_in"] or 0) + (meta2["tokens_in"] or 0),
+        "tokens_out": (meta["tokens_out"] or 0) + (meta2["tokens_out"] or 0),
+    }
     ok, retry_reason = validate_response(retry, stock_context, tool_result)
     if ok:
-        return retry, f"guardrail: {reason} (recuperado)", False
+        return retry, f"guardrail: {reason} (recuperado)", False, meta
 
     logger.warning("Guardrail rechazó también el reintento (%s); handoff", retry_reason)
-    return HANDOFF_FULL, f"guardrail: {reason} (handoff)", True
+    return HANDOFF_FULL, f"guardrail: {reason} (handoff)", True, meta
+
+
+def _product_line(p: dict) -> str:
+    """Línea estándar de producto para los bloques de contexto verificado."""
+    stock_val = p.get("stock")
+    stock_str = f"{stock_val} unidades" if stock_val and int(stock_val) > 0 else "SIN STOCK"
+    return f"- {p.get('title')} | Precio: ${p.get('price')} | Stock: {stock_str} | {p.get('permalink')}"
+
+
+def _format_alternatives_block(alternatives: list[dict]) -> str:
+    """Bloque [ALTERNATIVAS...] — al estar en el stock_context, el guardrail
+    permite estos precios/links (validate_response los encuentra textuales)."""
+    if not alternatives:
+        return ""
+    return (
+        "\n[ALTERNATIVAS verificadas con stock en nuestra tienda]\n"
+        + "\n".join(_product_line(p) for p in alternatives)
+        + "\n[IMPORTANTE: Si el producto pedido no está disponible, podés ofrecer 1 o 2 "
+        "de estas alternativas con su precio y link exactos. No inventes otras.]"
+    )
+
+
+async def _alternatives_block(
+    query: str, exclude_permalinks: frozenset = frozenset()
+) -> tuple[str, list[dict]]:
+    """
+    Busca alternativas con stock en el catálogo cacheado y arma el bloque para
+    el stock_context. Si el caché está vacío, falla, o no hay nada parecido,
+    retorna ("", []) y el contexto queda idéntico al flujo anterior.
+    """
+    if not query:
+        return "", []
+    try:
+        products = await get_catalog()
+        alts = find_alternatives(query, products, exclude_permalinks=exclude_permalinks)
+    except Exception as e:
+        logger.warning("No se pudieron buscar alternativas para '%s': %s", query, e)
+        return "", []
+    if not alts:
+        return "", []
+    logger.info("Alternativas para '%s': %s", query, [p.get("title") for p in alts])
+    return _format_alternatives_block(alts), alts
 
 
 def format_stock_context(tool_result: dict | None) -> str:
@@ -286,6 +348,23 @@ def format_stock_context(tool_result: dict | None) -> str:
             "\n[IMPORTANTE: No inventes productos ni links. Decí honestamente que no "
             "encontraste ese producto en este momento.]"
         )
+    # Listas de productos y/o alternativas (formato del catálogo/tools)
+    if "products" in tool_result or "alternatives" in tool_result:
+        products = tool_result.get("products") or []
+        if products:
+            block = (
+                "\n[Resultados verificados en nuestra tienda]\n"
+                + "\n".join(_product_line(p) for p in products[:3])
+                + "\n[IMPORTANTE: Solo los productos con stock > 0 están disponibles. "
+                "Usá precios y links exactos — no inventes ni modifiques.]"
+            )
+        else:
+            block = (
+                "\n[Búsqueda realizada: sin resultados para este producto en ninguna fuente]"
+                "\n[IMPORTANTE: No inventes productos ni links. Decí honestamente que no "
+                "encontraste ese producto en este momento.]"
+            )
+        return block + _format_alternatives_block(tool_result.get("alternatives") or [])
     # Comparación de precios TN/ML — las etiquetas "tienda oficial" y "MercadoLibre"
     # también hacen que _pick_response_model rutee al modelo sensible (gpt-4o).
     if "precio_tn" in tool_result or "precio_ml" in tool_result:
@@ -330,7 +409,11 @@ def load_knowledge_base() -> str:
         filename = os.path.basename(path)
         try:
             with open(path, encoding="utf-8") as f:
-                content = f.read().strip()
+                raw = f.read()
+            # Filtrar comentarios HTML (<!-- COMPLETAR: ... -->): son notas para
+            # el dueño, no deben entrar al prompt del bot ni del juez del eval.
+            content = re.sub(r"<!--.*?-->", "", raw, flags=re.DOTALL)
+            content = re.sub(r"\n{3,}", "\n\n", content).strip()
             if content:
                 parts.append(f"## {filename}\n{content}")
         except Exception as e:
@@ -541,6 +624,84 @@ async def _extract_search_query(message: str) -> str:
         return message
 
 
+# Intent de recomendación: mensajes vagos donde el extractor de producto devuelve
+# vacío pero el cliente quiere sugerencias (regalo, edad, presupuesto).
+_RECO_INTENT_RE = re.compile(
+    r"recomend|regal|algo para|para (nena|nene|niñ|beb)|barat|econ[oó]mic|hasta \$?\s?\d",
+    re.IGNORECASE,
+)
+
+
+async def _extract_recommendation_criteria(message: str, history: list[dict]) -> dict | None:
+    """
+    Extrae criterios de recomendación (keywords de categoría, edad, presupuesto)
+    del mensaje + los últimos 2 turnos del historial. Retorna None si no hay
+    nada usable (en ese caso el bot pregunta, como siempre).
+    """
+    context_lines = [f"{t['role']}: {t['content']}" for t in history[-2:]]
+    user_content = "\n".join(context_lines + [f"user: {message}"])
+    try:
+        completion = await _openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Analizá la consulta de un cliente de una tienda argentina de juguetes, "
+                        "papelería, bazar y electrónica que pide una recomendación. "
+                        'Respondé SOLO JSON, sin backticks: {"keywords": "2-4 palabras de categoría/tema '
+                        "para buscar en el catálogo (ej 'juguete didáctico', 'juego de mesa', 'muñeca bebé')\", "
+                        '"age": edad del destinatario en años como número o null, '
+                        '"price_max": presupuesto máximo en pesos como número o null}. '
+                        "Si mencionan edad, traducila a keywords apropiados (ej: 3 años → 'juguete didáctico encastre'). "
+                        'Si no hay ningún criterio usable: {"keywords": "", "age": null, "price_max": null}.'
+                    ),
+                },
+                {"role": "user", "content": user_content},
+            ],
+            max_tokens=80,
+            temperature=0,
+        )
+        data = json.loads(completion.choices[0].message.content.strip())
+        keywords = (data.get("keywords") or "").strip()
+        price_max = data.get("price_max")
+        if not keywords and price_max is None:
+            return None
+        return {"keywords": keywords, "age": data.get("age"), "price_max": price_max}
+    except Exception as e:
+        logger.warning("No se pudieron extraer criterios de recomendación: %s", e)
+        return None
+
+
+async def _recommendations_block(message: str, history: list[dict]) -> tuple[str, dict | None]:
+    """
+    Arma el bloque [RECOMENDACIONES...] desde el catálogo cacheado según los
+    criterios del cliente. Retorna ("", None) si no hay criterios o catálogo —
+    el bot sigue preguntando detalles como antes.
+    """
+    criteria = await _extract_recommendation_criteria(message, history)
+    if not criteria:
+        return "", None
+    try:
+        products = await get_catalog()
+        recos = filter_products(
+            products, criteria.get("keywords") or "", price_max=criteria.get("price_max")
+        )
+    except Exception as e:
+        logger.warning("No se pudieron buscar recomendaciones: %s", e)
+        return "", None
+    if not recos:
+        return "", None
+    logger.info("Recomendaciones para %s: %s", criteria, [p.get("title") for p in recos])
+    block = (
+        "\n[RECOMENDACIONES verificadas de nuestro catálogo]\n"
+        + "\n".join(_product_line(p) for p in recos)
+        + "\n[IMPORTANTE: Recomendá 1 o 2 de estas opciones con su precio y link exactos. "
+        "No inventes otras. Si ninguna encaja con lo que pide el cliente, preguntá más detalles.]"
+    )
+    return block, {"criteria": criteria, "products": recos}
+
+
 async def _process_admin_message(phone_number: str, message: str) -> str:
     """Procesa mensajes en modo admin — acceso completo a datos internos."""
     from tools import search_tiendanube, search_mercadolibre
@@ -628,6 +789,8 @@ async def process_message(
     escalated = False
     error_str = None
     response = None
+    search_query_log = None  # qué se buscó (observabilidad)
+    llm_meta = {"model": None, "tokens_in": None, "tokens_out": None}
 
     # ── Escalado determinístico ──────────────────────────────────────────────
     # Para intents que SIEMPRE deben derivar a humano, devolvemos la frase exacta
@@ -692,7 +855,7 @@ async def process_message(
         messages_llm.extend(history)
         messages_llm.append({"role": "user", "content": user_content})
         try:
-            response, guardrail_note, forced_handoff = await _generate_validated_response(
+            response, guardrail_note, forced_handoff, llm_meta = await _generate_validated_response(
                 messages_llm, message, stock_context, tool_result=None
             )
             escalated = forced_handoff or needs_human_handoff(response)
@@ -711,6 +874,9 @@ async def process_message(
                 escalated=escalated,
                 processing_ms=processing_ms,
                 error=error_str,
+                tokens_in=llm_meta["tokens_in"],
+                tokens_out=llm_meta["tokens_out"],
+                model=llm_meta["model"],
             ))
         await save_message(phone_number, "user", message)
         await save_message(phone_number, "assistant", response)
@@ -778,6 +944,7 @@ async def process_message(
                     search_query = q
                     break
         if search_query:
+            search_query_log = search_query
             logger.info("Buscando en MercadoLibre: '%s'", search_query)
             result = await search_mercadolibre(search_query)
             tool_result = result
@@ -802,6 +969,7 @@ async def process_message(
 
     elif klank_product_name:
         tool_used = "tienda_nube"
+        search_query_log = klank_product_name
         # Cliente compartió URL de nuestra tienda — buscar ese producto en TN
         result = await search_products(klank_product_name)
         tool_result = result
@@ -822,6 +990,7 @@ async def process_message(
 
     elif ml_item_id:
         tool_used = "mercadolibre"
+        search_query_log = ml_item_id
         product = await get_product_by_id_ml(ml_item_id)
         tool_result = product
         if "error" not in product:
@@ -831,11 +1000,19 @@ async def process_message(
                 f"[IMPORTANTE: Informá si ese producto específico tiene stock en Klank según el dato de arriba. "
                 f"Si stock es 0 o None, no lo tenemos. Ofrecé alternativas de nuestra tienda si las hay.]"
             )
+            if not (product.get("stock") or 0):
+                alt_block, alts = await _alternatives_block(
+                    product.get("title", ""), frozenset({product.get("permalink")})
+                )
+                if alt_block:
+                    stock_context += alt_block
+                    tool_result = {**product, "alternatives": alts}
         else:
             stock_context = "\n[No se pudo consultar ese producto de ML. Informá al cliente que no pudiste verificar ese item específico.]"
 
     elif ml_product_name:
         tool_used = "tienda_nube"
+        search_query_log = ml_product_name
         # URL de catálogo ML — buscar por nombre extraído del slug
         result = await search_products(ml_product_name)
         tool_result = result
@@ -859,11 +1036,16 @@ async def process_message(
                 "\n[El cliente compartió una URL de ML. No encontramos ese producto exacto en nuestra tienda ni en ML.]"
                 "\n[IMPORTANTE: Informá que no tenemos ese artículo pero ofrecé buscar algo similar si el cliente quiere.]"
             )
+            alt_block, alts = await _alternatives_block(ml_product_name)
+            if alt_block:
+                stock_context += alt_block
+                tool_result = {**result, "alternatives": alts}
 
     else:
         # Consulta de texto — GPT extrae el término, si devuelve vacío no es consulta de producto
         search_query = await _extract_search_query(message)
         if search_query:
+            search_query_log = search_query
             logger.info("Buscando en tiendas: '%s'", search_query)
             result = await search_products(search_query)
             tool_used = result.get("source", "tienda_nube")
@@ -888,11 +1070,31 @@ async def process_message(
                     "Usá precios y links exactos — no inventes ni modifiques. "
                     "NUNCA prometás avisar cuando vuelva el stock.]"
                 )
+                # Todos los resultados sin stock → sumar alternativas del catálogo
+                if not any((p.get("stock") or 0) > 0 for p in products[:3]):
+                    shown = frozenset(p.get("permalink") for p in products[:3])
+                    alt_block, alts = await _alternatives_block(search_query, shown)
+                    if alt_block:
+                        stock_context += alt_block
+                        tool_result = {**result, "alternatives": alts}
             else:
                 stock_context = (
                     "\n[Búsqueda realizada: sin resultados para este producto en ninguna fuente]"
                     "\n[IMPORTANTE: No inventes productos ni links. Decí honestamente que no encontraste ese producto en este momento.]"
                 )
+                alt_block, alts = await _alternatives_block(search_query)
+                if alt_block:
+                    stock_context += alt_block
+                    tool_result = {**result, "alternatives": alts}
+        elif _RECO_INTENT_RE.search(message):
+            # Consulta vaga tipo "algo para una nena de 3" / "juegos baratos":
+            # recomendar desde el catálogo real en vez de solo preguntar.
+            reco_block, reco_result = await _recommendations_block(message, history)
+            if reco_block:
+                tool_used = "recomendaciones"
+                tool_result = reco_result
+                stock_context = reco_block
+                search_query_log = reco_result["criteria"].get("keywords")
 
     user_content = message + stock_context
 
@@ -901,7 +1103,7 @@ async def process_message(
     messages.append({"role": "user", "content": user_content})
 
     try:
-        response, guardrail_note, forced_handoff = await _generate_validated_response(
+        response, guardrail_note, forced_handoff, llm_meta = await _generate_validated_response(
             messages, message, stock_context, tool_result
         )
         escalated = forced_handoff or needs_human_handoff(response)
@@ -912,6 +1114,7 @@ async def process_message(
         response = "Tuve un problema técnico. Intentá de nuevo en unos minutos."
     finally:
         processing_ms = int((time.monotonic() - start) * 1000)
+        results_count, alternatives_count = _derive_counts(tool_result)
         asyncio.create_task(log_interaction(
             phone_number=phone_number,
             user_message=message,
@@ -921,6 +1124,13 @@ async def process_message(
             escalated=escalated,
             processing_ms=processing_ms,
             error=error_str,
+            search_query=search_query_log,
+            results_count=results_count,
+            alternatives_count=alternatives_count,
+            tokens_in=llm_meta["tokens_in"],
+            tokens_out=llm_meta["tokens_out"],
+            model=llm_meta["model"],
+            kb_gap=_detect_kb_gap(tool_used, response),
         ))
 
     await save_message(phone_number, "user", message)
@@ -964,9 +1174,41 @@ async def _update_profile(phone_number: str, user_message: str, bot_response: st
                 notes=data.get("notes"),
             )
     except Exception as e:
-        logger.debug("No se pudo actualizar perfil para %s: %s", phone_number, e)
+        logger.warning("No se pudo actualizar perfil para %s: %s", phone_number, e)
 
 
 def needs_human_handoff(response: str) -> bool:
     """Retorna True si la respuesta contiene la frase de derivación a humano."""
     return HANDOFF_PHRASE in response
+
+
+_KB_GAP_MARKERS = (
+    "no tengo ese dato",
+    "no tengo esa información",
+    "no tengo esa informacion",
+    "no tengo información sobre",
+    "no tengo informacion sobre",
+    "no cuento con esa información",
+    "no cuento con esa informacion",
+)
+
+
+def _derive_counts(tool_result) -> tuple[int | None, int | None]:
+    """(results_count, alternatives_count) desde el tool_result, si aplica."""
+    if isinstance(tool_result, dict):
+        rc = len(tool_result["products"]) if isinstance(tool_result.get("products"), list) else None
+        ac = len(tool_result["alternatives"]) if isinstance(tool_result.get("alternatives"), list) else None
+        return rc, ac
+    return None, None
+
+
+def _detect_kb_gap(tool_used: str | None, response: str) -> bool:
+    """
+    Señal para el dueño: True cuando el bot no pudo responder desde la knowledge
+    base en una consulta que NO era de producto/pedido (tool_used vacío) — o sea,
+    algo que probablemente falte documentar en knowledge/.
+    """
+    if tool_used:
+        return False
+    low = (response or "").lower()
+    return any(m in low for m in _KB_GAP_MARKERS) or HANDOFF_PHRASE in response

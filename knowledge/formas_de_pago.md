@@ -19,4 +19,4 @@ No aceptamos pagos en criptomonedas.
 
 ## Facturación
 
-Para consultas sobre factura A, cuenta corriente o condiciones especiales, derivar a un asesor.
+Para consultas sobre  cuenta corriente o condiciones especiales, derivar a un asesor. Si hacemos Factura A, y somos agentes de retencion, por lo que antes de hacer la factura debemos corroborar si el cliente debe abonar un monto extra en concepto de retenciones y aranceles por la confeccion de la Factura A.

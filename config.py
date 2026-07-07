@@ -60,5 +60,9 @@ CHATWOOT_ACCOUNT_ID: str = _cfg["CHATWOOT_ACCOUNT_ID"]
 # TODO: mover a REQUIRED_VARS una vez configurado META_APP_SECRET en Railway.
 META_APP_SECRET: str = os.getenv("META_APP_SECRET", "")
 
+# TTL del caché del catálogo de Tienda Nube (segundos). El caché alimenta
+# alternativas y recomendaciones; la búsqueda primaria sigue siendo en vivo.
+CATALOG_TTL_S: int = int(os.getenv("CATALOG_TTL_S", "900"))
+
 PORT: int = int(os.getenv("PORT", "8000"))
 ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")

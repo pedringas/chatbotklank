@@ -19,8 +19,10 @@ KB_DOMAINS = {"klank.com.ar"}
 
 _URL_RE = re.compile(r"https?://[^\s]+")
 
-# Precios en formato argentino: $1.500 / $ 1.500,50 / $1500
-_PRICE_RE = re.compile(r"\$\s?\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\$\s?\d+")
+# Precios en formato argentino: $1.500 / $ 1.500,50 / $1500 / $1500,50
+# La 1ra alternativa EXIGE al menos un grupo de miles (.000); sin eso, "$12000"
+# matchearía "$120" y el precio quedaría mal normalizado (falso rechazo).
+_PRICE_RE = re.compile(r"\$\s?\d{1,3}(?:\.\d{3})+(?:,\d{2})?|\$\s?\d+(?:,\d{2})?")
 
 # Números sueltos dentro de tool_result (ej. {'price': 1500.0}) — sin símbolo $
 _NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")

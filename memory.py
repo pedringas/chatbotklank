@@ -18,6 +18,20 @@ import aiosqlite
 
 DB_PATH = "conversations.db"
 
+# Columnas de observabilidad de agent_logs (M5). Se agregan con ALTER si la
+# tabla ya existía (Railway/SQLite local viejo) y van en el CREATE para
+# instalaciones nuevas. kb_gap y results_count=0 son las señales que dicen
+# qué falta documentar en knowledge/ y dónde falla la búsqueda.
+_AGENT_LOG_EXTRA_COLS = (
+    ("search_query", "TEXT"),
+    ("results_count", "INTEGER"),
+    ("alternatives_count", "INTEGER"),
+    ("tokens_in", "INTEGER"),
+    ("tokens_out", "INTEGER"),
+    ("model", "TEXT"),
+    ("kb_gap", "BOOLEAN"),
+)
+
 
 async def _sqlite_init() -> None:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -40,6 +54,39 @@ async def _sqlite_init() -> None:
                 preferences  TEXT,
                 notes        TEXT,
                 updated_at   TEXT NOT NULL
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS agent_logs (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone_number   TEXT NOT NULL,
+                direction      TEXT,
+                user_message   TEXT,
+                tool_used      TEXT,
+                tool_result    TEXT,
+                response_text  TEXT,
+                escalated      INTEGER DEFAULT 0,
+                processing_ms  INTEGER,
+                error          TEXT,
+                prompt_version TEXT,
+                timestamp      TEXT NOT NULL DEFAULT (datetime('now')),
+                evaluated      TEXT,
+                judge_score    INTEGER,
+                judge_note     TEXT
+            )
+        """)
+        # Migración de columnas nuevas para bases locales creadas antes
+        # (SQLite no soporta ADD COLUMN IF NOT EXISTS)
+        cursor = await db.execute("PRAGMA table_info(agent_logs)")
+        existing = {row[1] for row in await cursor.fetchall()}
+        for col, typ in _AGENT_LOG_EXTRA_COLS:
+            if col not in existing:
+                await db.execute(f"ALTER TABLE agent_logs ADD COLUMN {col} {typ}")
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS kv_store (
+                key        TEXT PRIMARY KEY,
+                value      TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             )
         """)
         await db.commit()
@@ -136,6 +183,41 @@ async def _pg_init() -> None:
                 updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
+        # agent_logs versionada acá — antes se creaba a mano en la consola de
+        # Railway, y en un entorno nuevo el logging fallaba silenciosamente.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS agent_logs (
+                id             BIGSERIAL PRIMARY KEY,
+                phone_number   TEXT NOT NULL,
+                direction      TEXT,
+                user_message   TEXT,
+                tool_used      TEXT,
+                tool_result    TEXT,
+                response_text  TEXT,
+                escalated      BOOLEAN DEFAULT FALSE,
+                processing_ms  INTEGER,
+                error          TEXT,
+                prompt_version TEXT,
+                timestamp      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                evaluated      TIMESTAMPTZ,
+                judge_score    INTEGER,
+                judge_note     TEXT
+            )
+        """)
+        # Columnas de eval y observabilidad sobre la tabla preexistente de Railway
+        # (no-op si ya están)
+        extra_cols = (
+            ("evaluated", "TIMESTAMPTZ"), ("judge_score", "INTEGER"), ("judge_note", "TEXT"),
+        ) + _AGENT_LOG_EXTRA_COLS
+        for col, typ in extra_cols:
+            await conn.execute(f"ALTER TABLE agent_logs ADD COLUMN IF NOT EXISTS {col} {typ}")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS kv_store (
+                key        TEXT PRIMARY KEY,
+                value      TEXT NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
     logger.info("PostgreSQL inicializado correctamente")
 
 
@@ -191,6 +273,48 @@ async def _pg_save_profile(phone_number: str, name: str | None, preferences: str
 
 
 # ─── Interfaz pública ─────────────────────────────────────────────────────────
+
+def is_postgres() -> bool:
+    """True si init_db conectó a PostgreSQL (se resuelve al arrancar)."""
+    return _USE_POSTGRES
+
+
+async def kv_get(key: str) -> str | None:
+    """Lee un valor persistente del kv_store (ej: tokens renovados de ML)."""
+    if _USE_POSTGRES:
+        try:
+            pool = await _pg_get_pool()
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT value FROM kv_store WHERE key = $1", key)
+            return row["value"] if row else None
+        except Exception as e:
+            logger.error("Error leyendo kv_store[%s] de PG: %s", key, e)
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT value FROM kv_store WHERE key = ?", (key,))
+        row = await cursor.fetchone()
+    return row[0] if row else None
+
+
+async def kv_set(key: str, value: str) -> None:
+    """Guarda un valor persistente en el kv_store."""
+    if _USE_POSTGRES:
+        try:
+            pool = await _pg_get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO kv_store (key, value, updated_at) VALUES ($1, $2, NOW())
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+                """, key, value)
+            return
+        except Exception as e:
+            logger.error("Error guardando kv_store[%s] en PG: %s", key, e)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO kv_store (key, value, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+        """, (key, value, datetime.utcnow().isoformat()))
+        await db.commit()
+
 
 async def init_db() -> None:
     global _USE_POSTGRES

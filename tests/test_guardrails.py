@@ -90,6 +90,26 @@ def test_dominio_propio_desnudo_pasa():
     assert ok, reason
 
 
+def test_precio_sin_separador_de_miles_matchea_formateado():
+    """Regresión: '$12000' en el contexto debe permitir '$12.000' en la respuesta
+    (antes la regex parseaba '$12000' como '$120' y rechazaba de más)."""
+    ok, reason = validate_response(
+        "Sí, la tenemos a $12.000.",
+        "\n[Resultados]\n- Pelota | Precio: $12000 | Stock: 4 unidades | https://klank.com.ar/p/pelota",
+        None,
+    )
+    assert ok, reason
+
+
+def test_precio_con_decimales_sin_miles():
+    ok, reason = validate_response(
+        "Sale $8500,50.",
+        "\n[Resultados]\n- Item | Precio: $8500,50 | https://klank.com.ar/p/item",
+        None,
+    )
+    assert ok, reason
+
+
 def test_precio_en_tool_result_pasa():
     # El precio no está en el texto del contexto pero sí en el tool_result crudo
     ok, reason = validate_response(

@@ -3,22 +3,46 @@ Consultas de stock a MercadoLibre y Tienda Nube.
 TN es la fuente primaria (tienda propia, mejor margen); ML es el fallback automático.
 """
 
+import asyncio
 import logging
 import os
 import httpx
 from config import ML_ACCESS_TOKEN, ML_SELLER_ID, TN_ACCESS_TOKEN, TN_STORE_ID
+from memory import kv_get, kv_set
 
 logger = logging.getLogger(__name__)
 TIMEOUT = 10  # segundos para todas las llamadas externas
 
-# Token en memoria — se actualiza automáticamente cuando expira
+# Token en memoria — se actualiza automáticamente cuando expira y se persiste
+# en kv_store para sobrevivir reinicios (el token del .env queda como semilla).
 _ml_token = ML_ACCESS_TOKEN
+
+
+async def load_ml_token() -> None:
+    """
+    Carga el último token ML persistido en kv_store. Llamar en el lifespan:
+    sin esto, cada reinicio arranca con el token viejo del .env aunque ya se
+    haya renovado en una corrida anterior.
+    """
+    global _ml_token
+    try:
+        stored = await kv_get("ml_access_token")
+        if stored:
+            _ml_token = stored
+        stored_refresh = await kv_get("ml_refresh_token")
+        if stored_refresh:
+            os.environ["ML_REFRESH_TOKEN"] = stored_refresh
+        if stored or stored_refresh:
+            logger.info("Token ML cargado desde kv_store")
+    except Exception as e:
+        logger.warning("No se pudo cargar el token ML persistido: %s", e)
 
 
 async def _refresh_ml_token() -> str:
     """
     Renueva el access token de ML usando el refresh token.
-    Actualiza _ml_token en memoria y ML_REFRESH_TOKEN en el proceso.
+    Actualiza _ml_token en memoria, ML_REFRESH_TOKEN en el proceso, y persiste
+    ambos en kv_store para el próximo reinicio.
     """
     global _ml_token
     refresh_token = os.getenv("ML_REFRESH_TOKEN", "")
@@ -43,9 +67,15 @@ async def _refresh_ml_token() -> str:
             resp.raise_for_status()
             data = resp.json()
             _ml_token = data["access_token"]
-            # Actualizar refresh token en memoria si ML devuelve uno nuevo
-            if data.get("refresh_token"):
-                os.environ["ML_REFRESH_TOKEN"] = data["refresh_token"]
+            new_refresh = data.get("refresh_token")
+            if new_refresh:
+                os.environ["ML_REFRESH_TOKEN"] = new_refresh
+            try:
+                await kv_set("ml_access_token", _ml_token)
+                if new_refresh:
+                    await kv_set("ml_refresh_token", new_refresh)
+            except Exception as e:
+                logger.warning("No se pudo persistir el token ML renovado: %s", e)
             logger.info("Token de ML renovado correctamente")
             return _ml_token
     except Exception as e:
@@ -57,70 +87,100 @@ def _ml_headers() -> dict:
     return {"Authorization": f"Bearer {_ml_token}"}
 
 
-async def search_mercadolibre(query: str) -> dict:
+async def _get_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    headers: dict | None = None,
+    params: dict | None = None,
+    attempts: int = 2,
+    backoff: float = 0.5,
+) -> httpx.Response:
     """
-    Busca productos del vendedor en ML que coincidan con el query.
-    Si el token expiró (401) lo renueva automáticamente y reintenta una vez.
-    Si falla, llama a search_tiendanube como fallback.
+    GET con reintento ante timeout o 5xx (transitorios). Los 4xx no se
+    reintentan — son errores del request, no de la red.
     """
-    url = f"https://api.mercadolibre.com/users/{ML_SELLER_ID}/items/search"
-    params = {"q": query, "limit": 10}
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            resp = await client.get(url, headers=headers, params=params)
+            if resp.status_code >= 500 and attempt < attempts - 1:
+                logger.warning("GET %s devolvió %s — reintentando", url, resp.status_code)
+                await asyncio.sleep(backoff * (attempt + 1))
+                continue
+            return resp
+        except (httpx.TimeoutException, httpx.TransportError) as e:
+            last_exc = e
+            if attempt < attempts - 1:
+                logger.warning("GET %s falló (%s) — reintentando", url, e)
+                await asyncio.sleep(backoff * (attempt + 1))
+    raise last_exc
 
+
+async def _ml_get_json(url: str, params: dict | None = None) -> dict | None:
+    """
+    GET autenticado a la API de ML: renueva el token ante 401 (una vez) y
+    reintenta timeouts/5xx. Retorna el JSON o None si falló.
+    """
     for attempt in range(2):
         try:
             async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-                resp = await client.get(url, headers=_ml_headers(), params=params)
+                resp = await _get_with_retry(client, url, headers=_ml_headers(), params=params)
                 if resp.status_code == 401 and attempt == 0:
                     await _refresh_ml_token()
                     continue
                 resp.raise_for_status()
-                data = resp.json()
-
-            results_raw = data.get("results", [])
-            item_ids = [r["id"] for r in results_raw[:5] if isinstance(r, dict) and "id" in r]
-            if not item_ids:
-                return await search_tiendanube(query)
-
-            products = []
-            async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-                for item_id in item_ids[:3]:
-                    detail = await _get_ml_item(client, item_id)
-                    if detail:
-                        products.append(detail)
-
-            if not products:
-                return await search_tiendanube(query)
-
-            return {"source": "mercadolibre", "products": products}
-
+                return resp.json()
         except Exception as e:
-            logger.error("Error en MercadoLibre search: %s", e)
-            return await search_tiendanube(query)
+            logger.error("Error en GET ML %s: %s", url, e)
+            return None
+    return None
 
-    return await search_tiendanube(query)
+
+async def search_mercadolibre(query: str) -> dict:
+    """
+    Busca productos del vendedor en ML que coincidan con el query.
+    El helper _ml_get_json maneja 401 (refresh de token) y reintentos.
+    Si falla o no hay resultados, llama a search_tiendanube como fallback.
+    """
+    url = f"https://api.mercadolibre.com/users/{ML_SELLER_ID}/items/search"
+    data = await _ml_get_json(url, params={"q": query, "limit": 10})
+    if data is None:
+        logger.warning("Búsqueda ML falló para '%s' — fallback a Tienda Nube", query)
+        return await search_tiendanube(query)
+
+    results_raw = data.get("results", [])
+    item_ids = [r["id"] for r in results_raw[:5] if isinstance(r, dict) and "id" in r]
+    if not item_ids:
+        return await search_tiendanube(query)
+
+    products = []
+    for item_id in item_ids[:3]:
+        detail = await _get_ml_item(item_id)
+        if detail:
+            products.append(detail)
+
+    if not products:
+        return await search_tiendanube(query)
+
+    return {"source": "mercadolibre", "products": products}
 
 
-async def _get_ml_item(client: httpx.AsyncClient, item_id: str) -> dict | None:
+async def _get_ml_item(item_id: str) -> dict | None:
     """Obtiene detalle de un ítem de ML (uso interno)."""
-    try:
-        resp = await client.get(
-            f"https://api.mercadolibre.com/items/{item_id}", headers=_ml_headers()
-        )
-        resp.raise_for_status()
-        d = resp.json()
-        permalink = d.get("permalink", "")
-        logger.info("ML item %s: '%s' | precio=%s | stock=%s | link=%s",
-                    item_id, d.get("title", ""), d.get("price"), d.get("available_quantity"), permalink)
-        return {
-            "title": d.get("title", ""),
-            "price": d.get("price"),
-            "stock": d.get("available_quantity", 0),
-            "permalink": permalink,
-            "thumbnail": d.get("thumbnail", ""),
-        }
-    except Exception as e:
-        logger.warning("No se pudo obtener ítem ML %s: %s", item_id, e)
+    d = await _ml_get_json(f"https://api.mercadolibre.com/items/{item_id}")
+    if d is None:
         return None
+    permalink = d.get("permalink", "")
+    logger.info("ML item %s: '%s' | precio=%s | stock=%s | link=%s",
+                item_id, d.get("title", ""), d.get("price"), d.get("available_quantity"), permalink)
+    return {
+        "title": d.get("title", ""),
+        "price": d.get("price"),
+        "stock": d.get("available_quantity", 0),
+        "permalink": permalink,
+        "thumbnail": d.get("thumbnail", ""),
+    }
 
 
 def _parse_tn_products(data: list) -> list:
@@ -141,6 +201,14 @@ def _parse_tn_products(data: list) -> list:
         link = item.get("canonical_url") or item.get("permalink", "")
         sku = variant.get("sku", "")
         title = item.get("name", {}).get("es", "") or str(item.get("name", ""))
+        # Nombres de categorías (los usa catalog.py para alternativas afines)
+        categories = []
+        for cat in item.get("categories") or []:
+            cat_name = cat.get("name")
+            if isinstance(cat_name, dict):
+                cat_name = cat_name.get("es", "")
+            if cat_name:
+                categories.append(str(cat_name))
         logger.info("TN producto: '%s' | precio=%s | stock=%s", title, price, variant.get("stock"))
         products.append({
             "title": title,
@@ -149,6 +217,7 @@ def _parse_tn_products(data: list) -> list:
             "permalink": link,
             "thumbnail": image,
             "sku": sku,
+            "categories": categories,
         })
     return products
 
@@ -157,7 +226,9 @@ async def _tn_search_raw(query: str, headers: dict, url: str) -> list:
     """Hace una búsqueda en TN y retorna la lista cruda."""
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-            resp = await client.get(url, headers=headers, params={"q": query, "per_page": 10})
+            resp = await _get_with_retry(
+                client, url, headers=headers, params={"q": query, "per_page": 10}
+            )
             resp.raise_for_status()
             data = resp.json()
             return data if isinstance(data, list) else []
@@ -209,24 +280,18 @@ async def get_product_by_id_ml(item_id: str) -> dict:
     """
     Obtiene detalle completo de un producto específico de MercadoLibre.
     Retorna título, precio, stock, permalink y thumbnail.
+    Maneja 401 (refresh de token) y reintentos vía _ml_get_json.
     """
-    try:
-        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-            resp = await client.get(
-                f"https://api.mercadolibre.com/items/{item_id}", headers=_ml_headers()
-            )
-            resp.raise_for_status()
-            d = resp.json()
-        return {
-            "title": d.get("title", ""),
-            "price": d.get("price"),
-            "stock": d.get("available_quantity", 0),
-            "permalink": d.get("permalink", ""),
-            "thumbnail": d.get("thumbnail", ""),
-        }
-    except Exception as e:
-        logger.error("Error obteniendo ítem ML %s: %s", item_id, e)
+    d = await _ml_get_json(f"https://api.mercadolibre.com/items/{item_id}")
+    if d is None:
         return {"error": f"No se pudo obtener el producto {item_id}."}
+    return {
+        "title": d.get("title", ""),
+        "price": d.get("price"),
+        "stock": d.get("available_quantity", 0),
+        "permalink": d.get("permalink", ""),
+        "thumbnail": d.get("thumbnail", ""),
+    }
 
 
 async def get_order_tiendanube(order_id: str) -> dict:
@@ -239,7 +304,8 @@ async def get_order_tiendanube(order_id: str) -> dict:
     }
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-            resp = await client.get(
+            resp = await _get_with_retry(
+                client,
                 f"https://api.tiendanube.com/v1/{tn_store}/orders/{order_id}",
                 headers=headers,
             )

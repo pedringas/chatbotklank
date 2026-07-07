@@ -1,4 +1,5 @@
 .env
+knowledge/catalogo_resumen.md
 *.pyc
 __pycache__/
 *.db
