@@ -316,6 +316,55 @@ async def kv_set(key: str, value: str) -> None:
         await db.commit()
 
 
+# ─── Takeover humano (WhatsApp Coexistence) ────────────────────────────────────
+# Cuando el dueño responde manualmente desde la app de WhatsApp Business (evento
+# smb_message_echoes), el bot debe callarse para ese contacto durante un tiempo.
+# Se persiste en kv_store para sobrevivir reinicios del proceso.
+
+_TAKEOVER_KEY_PREFIX = "takeover:"
+
+
+async def set_human_takeover(phone_number: str, hours: float) -> None:
+    """Marca que un humano está atendiendo a este contacto; el bot no responde hasta que expire."""
+    from datetime import timedelta
+    expiry = (datetime.utcnow() + timedelta(hours=hours)).isoformat()
+    await kv_set(f"{_TAKEOVER_KEY_PREFIX}{phone_number}", expiry)
+
+
+async def is_human_active(phone_number: str) -> bool:
+    """True si hay un takeover humano vigente (no vencido) para este contacto."""
+    expiry_str = await kv_get(f"{_TAKEOVER_KEY_PREFIX}{phone_number}")
+    if not expiry_str:
+        return False
+    try:
+        expiry = datetime.fromisoformat(expiry_str)
+    except ValueError:
+        return False
+    if datetime.utcnow() >= expiry:
+        await clear_human_takeover(phone_number)
+        return False
+    return True
+
+
+async def clear_human_takeover(phone_number: str) -> None:
+    """Termina el takeover humano de este contacto (el bot vuelve a responder)."""
+    if _USE_POSTGRES:
+        try:
+            pool = await _pg_get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "DELETE FROM kv_store WHERE key = $1", f"{_TAKEOVER_KEY_PREFIX}{phone_number}"
+                )
+            return
+        except Exception as e:
+            logger.error("Error borrando takeover de %s en PG: %s", phone_number, e)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM kv_store WHERE key = ?", (f"{_TAKEOVER_KEY_PREFIX}{phone_number}",)
+        )
+        await db.commit()
+
+
 async def init_db() -> None:
     global _USE_POSTGRES
     if DATABASE_URL:

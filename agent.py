@@ -11,8 +11,8 @@ import glob
 import re
 import time
 from openai import AsyncOpenAI
-from config import OPENAI_API_KEY
-from memory import get_history, save_message, get_profile, save_profile
+from config import OPENAI_API_KEY, COEXISTENCE_MODE, HUMAN_TAKEOVER_HOURS
+from memory import get_history, save_message, get_profile, save_profile, set_human_takeover
 from tools import search_products, get_product_by_id_ml, search_mercadolibre, get_order_tiendanube, get_order_mercadolibre
 from agent_logger import log_interaction
 from guardrails import validate_response
@@ -244,12 +244,32 @@ CONTEXTO DEL NEGOCIO (BASE DE CONOCIMIENTO)
 
 {knowledge_base}"""
 
-# Derivación: el cliente se comunica a un número de teléfono (no se toma la
-# conversación por Chatwoot — eso queda solo como aviso interno al equipo).
+# Derivación (modo default, COEXISTENCE_MODE=False): el cliente se comunica a
+# un número de teléfono distinto (no se toma la conversación por Chatwoot —
+# eso queda solo como aviso interno al equipo).
 HANDOFF_PHONE = "+5493513047511"
 HANDOFF_FULL = f"Para esta consulta comunicate con un asesor de Klank al {HANDOFF_PHONE}. Te van a ayudar a la brevedad."
 # Substring estable para detectar que una respuesta es una derivación.
 HANDOFF_PHRASE = "comunicate con un asesor de Klank al"
+
+# Derivación en modo WhatsApp Coexistence: el número del bot y el de
+# derivación son el MISMO (+5493513047511 migrado a Coexistence), así que no
+# tiene sentido pedirle al cliente que escriba a otro lado — el bot avisa y
+# se calla; el dueño responde desde la app (ver set_human_takeover).
+HANDOFF_COEXISTENCE = "Te paso con un asesor, en un momento te responde por acá."
+HANDOFF_COEXISTENCE_PHRASE = "te paso con un asesor"
+
+
+def _handoff_message() -> str:
+    """Frase de derivación según el modo activo (Coexistence o número separado)."""
+    return HANDOFF_COEXISTENCE if COEXISTENCE_MODE else HANDOFF_FULL
+
+
+async def _maybe_trigger_takeover(phone_number: str) -> None:
+    """En modo Coexistence, al escalar el bot activa el takeover humano de
+    inmediato — no espera a que el dueño escriba primero desde la app."""
+    if COEXISTENCE_MODE:
+        await set_human_takeover(phone_number, HUMAN_TAKEOVER_HOURS)
 
 
 async def _generate_validated_response(
@@ -288,7 +308,7 @@ async def _generate_validated_response(
         return retry, f"guardrail: {reason} (recuperado)", False, meta
 
     logger.warning("Guardrail rechazó también el reintento (%s); handoff", retry_reason)
-    return HANDOFF_FULL, f"guardrail: {reason} (handoff)", True, meta
+    return _handoff_message(), f"guardrail: {reason} (handoff)", True, meta
 
 
 def _product_line(p: dict) -> str:
@@ -799,13 +819,13 @@ async def process_message(
     escalation_response = None
     if _is_defective_product(message) or _is_frustrated_client(message) or _is_payment_problem(message):
         # Quejas, productos defectuosos y problemas de cobro: empatía + frase exacta
-        escalation_response = "Lamento la situación. " + HANDOFF_FULL
+        escalation_response = "Lamento la situación. " + _handoff_message()
     elif _requires_human_order_action(message):
         # Cancelar, cambiar dirección, devolución de dinero, doble cobro
-        escalation_response = HANDOFF_FULL
+        escalation_response = _handoff_message()
     elif _is_mayorista_query(message):
         # Mayorista/volumen/factura A: frase exacta sin preámbulos
-        escalation_response = HANDOFF_FULL
+        escalation_response = _handoff_message()
 
     if escalation_response is not None:
         processing_ms = int((time.monotonic() - start) * 1000)
@@ -821,6 +841,7 @@ async def process_message(
         ))
         await save_message(phone_number, "user", message)
         await save_message(phone_number, "assistant", escalation_response)
+        await _maybe_trigger_takeover(phone_number)
         return escalation_response
 
     history = await get_history(phone_number, limit=20)
@@ -880,6 +901,8 @@ async def process_message(
             ))
         await save_message(phone_number, "user", message)
         await save_message(phone_number, "assistant", response)
+        if escalated:
+            await _maybe_trigger_takeover(phone_number)
         return response
 
     # Inicializar variables de producto (pueden quedar en None si es consulta de pedido)
@@ -1136,6 +1159,8 @@ async def process_message(
     await save_message(phone_number, "user", message)
     await save_message(phone_number, "assistant", response)
     asyncio.create_task(_update_profile(phone_number, message, response))
+    if escalated:
+        await _maybe_trigger_takeover(phone_number)
 
     return response
 
@@ -1178,8 +1203,9 @@ async def _update_profile(phone_number: str, user_message: str, bot_response: st
 
 
 def needs_human_handoff(response: str) -> bool:
-    """Retorna True si la respuesta contiene la frase de derivación a humano."""
-    return HANDOFF_PHRASE in response
+    """Retorna True si la respuesta contiene la frase de derivación a humano
+    (cualquiera de los dos modos: número separado o Coexistence)."""
+    return HANDOFF_PHRASE in response or HANDOFF_COEXISTENCE_PHRASE in response.lower()
 
 
 _KB_GAP_MARKERS = (
@@ -1211,4 +1237,4 @@ def _detect_kb_gap(tool_used: str | None, response: str) -> bool:
     if tool_used:
         return False
     low = (response or "").lower()
-    return any(m in low for m in _KB_GAP_MARKERS) or HANDOFF_PHRASE in response
+    return any(m in low for m in _KB_GAP_MARKERS) or needs_human_handoff(response or "")

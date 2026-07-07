@@ -64,5 +64,15 @@ META_APP_SECRET: str = os.getenv("META_APP_SECRET", "")
 # alternativas y recomendaciones; la búsqueda primaria sigue siendo en vivo.
 CATALOG_TTL_S: int = int(os.getenv("CATALOG_TTL_S", "900"))
 
+# WhatsApp Coexistence: feature flag para activar el manejo de smb_message_echoes
+# / smb_app_state_sync y el silencio del bot durante takeover humano. Default
+# False para no cambiar comportamiento hasta completar el onboarding con Meta
+# (ver plan de implementación).
+COEXISTENCE_MODE: bool = os.getenv("COEXISTENCE_MODE", "false").lower() == "true"
+
+# Horas que el bot queda en silencio para un contacto después de que el dueño
+# le responde manualmente desde la app de WhatsApp Business.
+HUMAN_TAKEOVER_HOURS: float = float(os.getenv("HUMAN_TAKEOVER_HOURS", "24"))
+
 PORT: int = int(os.getenv("PORT", "8000"))
 ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")

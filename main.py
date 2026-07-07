@@ -21,11 +21,14 @@ from config import (
     META_APP_SECRET,
     PORT,
     ENVIRONMENT,
+    COEXISTENCE_MODE,
+    HUMAN_TAKEOVER_HOURS,
 )
-from memory import init_db
+from memory import init_db, set_human_takeover, is_human_active
 from tools import load_ml_token
 from catalog import refresh_catalog
 from agent import process_message, needs_human_handoff, load_knowledge_base, _is_product_query, format_stock_context
+from agent_logger import log_interaction
 from chatwoot import (
     create_or_get_contact,
     get_or_create_conversation,
@@ -118,21 +121,65 @@ async def receive_webhook(request: Request):
     return JSONResponse({"status": "ok"})
 
 
+async def _handle_smb_message_echo(value: dict) -> None:
+    """
+    WhatsApp Coexistence: el dueño respondió manualmente desde la app de
+    WhatsApp Business. Pausa al bot para ese contacto (set_human_takeover) y
+    registra el mensaje — nunca genera una respuesta automática.
+    NOTA: el nombre exacto del campo del destinatario en este payload todavía
+    no está confirmado contra un envío real de Meta (ver plan de Coexistence).
+    Por eso se loguea el payload crudo — revisarlo en la prueba controlada de
+    la Fase 3 y ajustar la extracción de `phone` si hace falta.
+    """
+    if not COEXISTENCE_MODE:
+        return
+    logger.info("smb_message_echoes payload crudo: %s", json.dumps(value)[:2000])
+    for msg in value.get("messages", []):
+        phone = msg.get("to") or msg.get("recipient_id")
+        if not phone:
+            contacts = value.get("contacts", [])
+            if contacts:
+                phone = contacts[0].get("wa_id")
+        if not phone:
+            logger.warning(
+                "smb_message_echoes: no se pudo determinar el destinatario del mensaje "
+                "humano — revisar el payload crudo logueado arriba"
+            )
+            continue
+        text = msg.get("text", {}).get("body", "") if msg.get("type") == "text" else f"[{msg.get('type', 'mensaje')}]"
+        await set_human_takeover(phone, HUMAN_TAKEOVER_HOURS)
+        logger.info("Takeover humano activado para %s por %s hs (echo de la app)", phone, HUMAN_TAKEOVER_HOURS)
+        asyncio.create_task(log_interaction(
+            phone_number=phone,
+            user_message="",
+            response_text=text,
+            direction="outbound_human",
+        ))
+
+
 async def _handle_webhook(body: dict) -> None:
     entry = body.get("entry", [])
     for e in entry:
         for change in e.get("changes", []):
+            field = change.get("field", "messages")
             value = change.get("value", {})
+
+            if field == "smb_message_echoes":
+                await _handle_smb_message_echo(value)
+                continue
+            if field == "smb_app_state_sync":
+                # Sync único de historial/contactos post-onboarding de Coexistence.
+                # No es un mensaje en vivo — nunca debe pasar por process_message.
+                logger.info("smb_app_state_sync recibido (sync de historial, ignorado)")
+                continue
+            if field != "messages":
+                # Campo de webhook no manejado explícitamente (ej. status de entrega)
+                continue
+
             messages = value.get("messages", [])
-            metadata = value.get("metadata", {})
-            bot_number = metadata.get("phone_number_id", "")
 
             for msg in messages:
                 msg_type = msg.get("type")
-                # Evitar loop si el mensaje viene del propio bot
-                if msg.get("from") == bot_number:
-                    continue
-
                 phone = msg["from"]
 
                 # Audio — no podemos procesarlo
@@ -166,6 +213,18 @@ async def _handle_webhook(body: dict) -> None:
                     text = msg["text"]["body"]
 
                 logger.info("Mensaje recibido de %s: %s", phone, text[:60])
+
+                # WhatsApp Coexistence: si el dueño está atendiendo a este contacto
+                # manualmente desde la app, el bot se queda en silencio.
+                if COEXISTENCE_MODE and await is_human_active(phone):
+                    logger.info("Bot en silencio para %s (takeover humano activo)", phone)
+                    asyncio.create_task(log_interaction(
+                        phone_number=phone,
+                        user_message=text,
+                        response_text="",
+                        error="skipped: human_takeover_active",
+                    ))
+                    continue
 
                 # Mandar "buscando..." solo si hay una búsqueda real de stock o URL, nunca en saludos
                 from agent import _extract_ml_item_id, _extract_ml_product_name, _extract_klank_product_name
