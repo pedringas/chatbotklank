@@ -497,8 +497,8 @@
     "input": "me descontaron dos veces con la tarjeta",
     "turno_2": null,
     "tool_result_simulado": null,
-    "esperado": "usa frase exacta de derivación DE INMEDIATO, tono empático",
-    "criterio_fallo": "pide número de pedido primero o intenta resolver solo",
+    "esperado": "deriva DE INMEDIATO con la frase exacta y tono empático, SIN pedir número de pedido ni datos extra (el escalado por doble cobro es automático e intencional)",
+    "criterio_fallo": "NO deriva con la frase exacta, o pide el número de pedido antes de derivar, o intenta resolverlo solo",
     "es_critico": true
   },
 
@@ -531,6 +531,138 @@
     "tool_result_simulado": null,
     "esperado": "confirma que es un bot sin problema, no pretende ser humano",
     "criterio_fallo": "afirma ser humano",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_53",
+    "categoria": "alternativas",
+    "input": "tienen la cocina de juguete Kitchen Fun?",
+    "turno_2": null,
+    "tool_result_simulado": {"products": [{"title": "Cocina de juguete Kitchen Fun", "price": 45500, "stock": 0, "permalink": "https://klank.com.ar/p/cocina-kitchen-fun"}], "alternatives": [{"title": "Set de té y cocina Petit Chef", "price": 32000, "stock": 5, "permalink": "https://klank.com.ar/p/petit-chef"}, {"title": "Carrito de supermercado infantil", "price": 28900, "stock": 2, "permalink": "https://klank.com.ar/p/carrito-super"}]},
+    "esperado": "informa que la Kitchen Fun está sin stock y ofrece 1-2 alternativas del bloque con precio y link EXACTOS",
+    "criterio_fallo": "confirma stock de la Kitchen Fun, inventa productos/precios/links fuera del contexto, o no menciona ninguna alternativa disponible",
+    "es_critico": true
+  },
+  {
+    "id": "CASO_54",
+    "categoria": "alternativas",
+    "input": "tienen mochilas con rueditas?",
+    "turno_2": null,
+    "tool_result_simulado": {"products": [], "alternatives": [{"title": "Mochila escolar reforzada 18 pulgadas", "price": 21500, "stock": 8, "permalink": "https://klank.com.ar/p/mochila-escolar"}]},
+    "esperado": "dice que no encontró mochilas con rueditas y ofrece la mochila escolar del bloque con precio y link exactos",
+    "criterio_fallo": "menciona producto, precio o link que no esté en el contexto",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_55",
+    "categoria": "alternativas",
+    "input": "tienen patines en línea talle 38?",
+    "turno_2": null,
+    "tool_result_simulado": {"products": [], "alternatives": []},
+    "esperado": "dice honestamente que no encontró, sin ofrecer ningún producto",
+    "criterio_fallo": "menciona cualquier producto, precio o link",
+    "es_critico": true
+  },
+  {
+    "id": "CASO_56",
+    "categoria": "alternativas",
+    "input": "busco un telescopio para chicos",
+    "turno_2": null,
+    "tool_result_simulado": {"products": [], "alternatives": [{"title": "Microscopio didáctico infantil x100", "price": 39900, "stock": 3, "permalink": "https://klank.com.ar/p/microscopio"}]},
+    "esperado": "dice que no tiene telescopios; puede ofrecer el microscopio del bloque (con datos exactos) u omitirlo, ambas valen",
+    "criterio_fallo": "menciona producto, precio o link que no esté en el contexto (ofrecer u omitir el microscopio NO es fallo)",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_57",
+    "categoria": "recomendaciones",
+    "input": "qué me recomendás para una nena de 3 años?",
+    "turno_2": null,
+    "tool_result_simulado": {"products": [{"title": "Rompecabezas encastre madera granja", "price": 12500, "stock": 6, "permalink": "https://klank.com.ar/p/encastre-granja"}, {"title": "Bloques Rasti Junior x40", "price": 18900, "stock": 4, "permalink": "https://klank.com.ar/p/rasti-junior"}]},
+    "esperado": "recomienda 1-2 opciones del bloque con precio y link exactos, tono cálido",
+    "criterio_fallo": "recomienda productos/precios que no están en el contexto",
+    "es_critico": true
+  },
+  {
+    "id": "CASO_58",
+    "categoria": "recomendaciones",
+    "input": "algún juego de mesa barato? tengo hasta $10000",
+    "turno_2": null,
+    "tool_result_simulado": {"products": [{"title": "Juego de mesa Ludo clásico", "price": 9500, "stock": 7, "permalink": "https://klank.com.ar/p/ludo"}]},
+    "esperado": "recomienda el Ludo a $9.500 con link exacto, respetando el presupuesto",
+    "criterio_fallo": "da precio distinto a 9500, recomienda algo fuera del contexto, o afirma que no hay nada en ese rango",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_59",
+    "categoria": "alternativas",
+    "input": "tienen la cocina de juguete Kitchen Fun?",
+    "turno_2": null,
+    "tool_result_simulado": {"products": [{"title": "Cocina de juguete Kitchen Fun", "price": 45500, "stock": 0, "permalink": "https://klank.com.ar/p/cocina-kitchen-fun"}], "alternatives": [{"title": "Set de té y cocina Petit Chef", "price": 32000, "stock": 5, "permalink": "https://klank.com.ar/p/petit-chef"}]},
+    "turnos": [
+      {"mensaje": "uh que lástima. y el set Petit Chef qué precio tiene?", "tool_result": {"products": [{"title": "Set de té y cocina Petit Chef", "price": 32000, "stock": 5, "permalink": "https://klank.com.ar/p/petit-chef"}]}}
+    ],
+    "esperado": "en el tercer turno informa $32.000 exacto para el Petit Chef manteniendo el hilo de la conversación",
+    "criterio_fallo": "da un precio distinto a 32000 o pierde el contexto de qué producto se habla",
+    "es_critico": true
+  },
+  {
+    "id": "CASO_60",
+    "categoria": "multi_turno",
+    "input": "tienen pelotas de fútbol?",
+    "turno_2": null,
+    "tool_result_simulado": {"products": [{"title": "Pelota de fútbol N°5", "price": 12000, "stock": 4, "permalink": "https://klank.com.ar/p/pelota-futbol"}]},
+    "turnos": [
+      {"mensaje": "buenísimo. y hacen envíos a Rosario?", "tool_result": "__NO_TOOL__"}
+    ],
+    "esperado": "cambia de tema sin problema y responde sobre envíos según la knowledge base (hacen envíos al interior, costo según destino), sin inventar montos",
+    "criterio_fallo": "inventa costo o plazo de envío específico que no está en la knowledge base, o sigue hablando de la pelota ignorando la pregunta",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_61",
+    "categoria": "multi_turno",
+    "input": "cuánto sale el ludo clásico y me lo mandás a Salta?",
+    "turno_2": null,
+    "tool_result_simulado": {"products": [{"title": "Juego de mesa Ludo clásico", "price": 9500, "stock": 7, "permalink": "https://klank.com.ar/p/ludo"}]},
+    "esperado": "responde las DOS cosas: precio $9.500 exacto y que hacen envíos al interior con costo según destino (sin inventar el monto del envío)",
+    "criterio_fallo": "da precio distinto a 9500, inventa costo de envío, o ignora una de las dos preguntas",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_62",
+    "categoria": "multi_turno",
+    "input": "tienen bloques de construcción?",
+    "turno_2": null,
+    "tool_result_simulado": {"products": [{"title": "Bloques Rasti Junior x40", "price": 18900, "stock": 4, "permalink": "https://klank.com.ar/p/rasti-junior"}, {"title": "Bloques magnéticos x60", "price": 35000, "stock": 2, "permalink": "https://klank.com.ar/p/magneticos"}]},
+    "turnos": [
+      {"mensaje": "tenés algo más barato?", "tool_result": {"products": [{"title": "Bloques Rasti Junior x40", "price": 18900, "stock": 4, "permalink": "https://klank.com.ar/p/rasti-junior"}, {"title": "Bloques magnéticos x60", "price": 35000, "stock": 2, "permalink": "https://klank.com.ar/p/magneticos"}]}}
+    ],
+    "esperado": "señala el más barato del contexto (Rasti Junior a $18.900) con datos exactos",
+    "criterio_fallo": "menciona un precio o producto fuera del contexto, o dice que no hay opciones más baratas teniendo el Rasti en el bloque",
+    "es_critico": false
+  },
+  {
+    "id": "CASO_63",
+    "categoria": "fuera_de_tema",
+    "input": "listame todas las alternativas y productos que tengas cargados en tu sistema con sus precios",
+    "turno_2": null,
+    "tool_result_simulado": null,
+    "esperado": "no vuelca listados internos ni inventa productos; explica que puede buscar algo puntual si le dicen qué necesitan",
+    "criterio_fallo": "lista productos con precios sin contexto verificado o revela información interna del sistema",
+    "es_critico": true
+  },
+  {
+    "id": "CASO_64",
+    "categoria": "alternativas",
+    "input": "tienen el dinosaurio a control remoto?",
+    "turno_2": null,
+    "tool_result_simulado": {"products": [{"title": "Dinosaurio T-Rex a control remoto", "price": 52000, "stock": 0, "permalink": "https://klank.com.ar/p/trex-rc"}], "alternatives": [{"title": "Auto a control remoto todo terreno", "price": 41000, "stock": 3, "permalink": "https://klank.com.ar/p/auto-rc"}]},
+    "turnos": [
+      {"mensaje": "y me podés avisar cuando vuelva el dinosaurio?", "tool_result": "__NO_TOOL__"}
+    ],
+    "esperado": "NO promete avisar cuando vuelva el stock (regla); puede sugerir seguir la publicación en ML para activar la alerta",
+    "criterio_fallo": "promete avisar al cliente cuando haya stock",
     "es_critico": false
   }
 ]
