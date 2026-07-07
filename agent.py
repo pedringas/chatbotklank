@@ -4,6 +4,7 @@ Orquesta LLM, tools de stock, historial de conversación y base de conocimiento.
 """
 
 import asyncio
+import json
 import logging
 import os
 import glob
@@ -15,7 +16,7 @@ from memory import get_history, save_message, get_profile, save_profile
 from tools import search_products, get_product_by_id_ml, search_mercadolibre, get_order_tiendanube, get_order_mercadolibre
 from agent_logger import log_interaction
 from guardrails import validate_response
-from catalog import get_catalog, find_alternatives
+from catalog import get_catalog, find_alternatives, filter_products
 
 logger = logging.getLogger(__name__)
 
@@ -151,9 +152,9 @@ Si querés recibir una notificación cuando vuelva a estar disponible, podés se
 REGLAS INAMOVIBLES:
 - Nunca inventés un precio. Si no lo tenés de la API, no lo decís
 - Nunca confirmés stock que no verificaste en tiempo real
-- REGLA ABSOLUTA: JAMÁS menciones un producto, precio o link que no esté en los bloques [Resultados verificados...] o [ALTERNATIVAS...] del mensaje actual. Esos son los ÚNICOS productos que existís para vos en este momento. No construyas URLs. No combines nombres de productos con slugs. Si no hay bloques de resultados ni alternativas, no podés nombrar ningún producto específico
+- REGLA ABSOLUTA: JAMÁS menciones un producto, precio o link que no esté en los bloques [Resultados verificados...], [ALTERNATIVAS...] o [RECOMENDACIONES...] del mensaje actual. Esos son los ÚNICOS productos que existís para vos en este momento. No construyas URLs. No combines nombres de productos con slugs. Si no hay ninguno de esos bloques, no podés nombrar ningún producto específico
 - Si el cliente pide filtrar por precio (ej: "menos de $10000"), solo mostrá los productos del bloque de resultados que cumplan ese criterio. Si ninguno cumple, decí honestamente que no encontraste opciones en ese rango
-- Si el cliente pide una categoría amplia ("juguetes para nena"), preguntá qué producto específico busca antes de buscar
+- Si el cliente pide una categoría amplia ("juguetes para nena") y el contexto incluye un bloque [RECOMENDACIONES verificadas de nuestro catálogo], ofrecé 1 o 2 de esas opciones con su precio y link exactos y preguntá si busca algo de ese estilo. Si NO hay bloque de recomendaciones, preguntá edad, ocasión o presupuesto antes de sugerir
 - Si la búsqueda no devuelve resultados o el producto está sin stock, decilo honestamente. Si el contexto incluye un bloque [ALTERNATIVAS verificadas con stock en nuestra tienda], ofrecé 1 o 2 de esas opciones con su precio y link exactos, presentándolas como algo parecido que sí tenemos. Si NO hay bloque de alternativas, no menciones ningún producto específico ni precio
 - Si no entendés bien lo que pide el cliente, pedile que lo reformule antes de buscar
 - Si la búsqueda falla por error técnico, derivá a un asesor
@@ -602,6 +603,84 @@ async def _extract_search_query(message: str) -> str:
         return message
 
 
+# Intent de recomendación: mensajes vagos donde el extractor de producto devuelve
+# vacío pero el cliente quiere sugerencias (regalo, edad, presupuesto).
+_RECO_INTENT_RE = re.compile(
+    r"recomend|regal|algo para|para (nena|nene|niñ|beb)|barat|econ[oó]mic|hasta \$?\s?\d",
+    re.IGNORECASE,
+)
+
+
+async def _extract_recommendation_criteria(message: str, history: list[dict]) -> dict | None:
+    """
+    Extrae criterios de recomendación (keywords de categoría, edad, presupuesto)
+    del mensaje + los últimos 2 turnos del historial. Retorna None si no hay
+    nada usable (en ese caso el bot pregunta, como siempre).
+    """
+    context_lines = [f"{t['role']}: {t['content']}" for t in history[-2:]]
+    user_content = "\n".join(context_lines + [f"user: {message}"])
+    try:
+        completion = await _openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Analizá la consulta de un cliente de una tienda argentina de juguetes, "
+                        "papelería, bazar y electrónica que pide una recomendación. "
+                        'Respondé SOLO JSON, sin backticks: {"keywords": "2-4 palabras de categoría/tema '
+                        "para buscar en el catálogo (ej 'juguete didáctico', 'juego de mesa', 'muñeca bebé')\", "
+                        '"age": edad del destinatario en años como número o null, '
+                        '"price_max": presupuesto máximo en pesos como número o null}. '
+                        "Si mencionan edad, traducila a keywords apropiados (ej: 3 años → 'juguete didáctico encastre'). "
+                        'Si no hay ningún criterio usable: {"keywords": "", "age": null, "price_max": null}.'
+                    ),
+                },
+                {"role": "user", "content": user_content},
+            ],
+            max_tokens=80,
+            temperature=0,
+        )
+        data = json.loads(completion.choices[0].message.content.strip())
+        keywords = (data.get("keywords") or "").strip()
+        price_max = data.get("price_max")
+        if not keywords and price_max is None:
+            return None
+        return {"keywords": keywords, "age": data.get("age"), "price_max": price_max}
+    except Exception as e:
+        logger.warning("No se pudieron extraer criterios de recomendación: %s", e)
+        return None
+
+
+async def _recommendations_block(message: str, history: list[dict]) -> tuple[str, dict | None]:
+    """
+    Arma el bloque [RECOMENDACIONES...] desde el catálogo cacheado según los
+    criterios del cliente. Retorna ("", None) si no hay criterios o catálogo —
+    el bot sigue preguntando detalles como antes.
+    """
+    criteria = await _extract_recommendation_criteria(message, history)
+    if not criteria:
+        return "", None
+    try:
+        products = await get_catalog()
+        recos = filter_products(
+            products, criteria.get("keywords") or "", price_max=criteria.get("price_max")
+        )
+    except Exception as e:
+        logger.warning("No se pudieron buscar recomendaciones: %s", e)
+        return "", None
+    if not recos:
+        return "", None
+    logger.info("Recomendaciones para %s: %s", criteria, [p.get("title") for p in recos])
+    block = (
+        "\n[RECOMENDACIONES verificadas de nuestro catálogo]\n"
+        + "\n".join(_product_line(p) for p in recos)
+        + "\n[IMPORTANTE: Recomendá 1 o 2 de estas opciones con su precio y link exactos. "
+        "No inventes otras. Si ninguna encaja con lo que pide el cliente, preguntá más detalles.]"
+    )
+    return block, {"criteria": criteria, "products": recos}
+
+
 async def _process_admin_message(phone_number: str, message: str) -> str:
     """Procesa mensajes en modo admin — acceso completo a datos internos."""
     from tools import search_tiendanube, search_mercadolibre
@@ -976,6 +1055,14 @@ async def process_message(
                 if alt_block:
                     stock_context += alt_block
                     tool_result = {**result, "alternatives": alts}
+        elif _RECO_INTENT_RE.search(message):
+            # Consulta vaga tipo "algo para una nena de 3" / "juegos baratos":
+            # recomendar desde el catálogo real en vez de solo preguntar.
+            reco_block, reco_result = await _recommendations_block(message, history)
+            if reco_block:
+                tool_used = "recomendaciones"
+                tool_result = reco_result
+                stock_context = reco_block
 
     user_content = message + stock_context
 
