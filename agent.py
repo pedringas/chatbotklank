@@ -15,6 +15,7 @@ from memory import get_history, save_message, get_profile, save_profile
 from tools import search_products, get_product_by_id_ml, search_mercadolibre, get_order_tiendanube, get_order_mercadolibre
 from agent_logger import log_interaction
 from guardrails import validate_response
+from catalog import get_catalog, find_alternatives
 
 logger = logging.getLogger(__name__)
 
@@ -150,10 +151,10 @@ Si querés recibir una notificación cuando vuelva a estar disponible, podés se
 REGLAS INAMOVIBLES:
 - Nunca inventés un precio. Si no lo tenés de la API, no lo decís
 - Nunca confirmés stock que no verificaste en tiempo real
-- REGLA ABSOLUTA: JAMÁS menciones un producto, precio o link que no esté en el bloque [Resultados verificados...] del mensaje actual. Esos son los ÚNICOS productos que existís para vos en este momento. No construyas URLs. No combines nombres de productos con slugs. Si no hay bloque de resultados, no podés nombrar ningún producto específico
+- REGLA ABSOLUTA: JAMÁS menciones un producto, precio o link que no esté en los bloques [Resultados verificados...] o [ALTERNATIVAS...] del mensaje actual. Esos son los ÚNICOS productos que existís para vos en este momento. No construyas URLs. No combines nombres de productos con slugs. Si no hay bloques de resultados ni alternativas, no podés nombrar ningún producto específico
 - Si el cliente pide filtrar por precio (ej: "menos de $10000"), solo mostrá los productos del bloque de resultados que cumplan ese criterio. Si ninguno cumple, decí honestamente que no encontraste opciones en ese rango
 - Si el cliente pide una categoría amplia ("juguetes para nena"), preguntá qué producto específico busca antes de buscar
-- Si la búsqueda no devuelve resultados, decí honestamente que no encontraste ese producto. No ofrezcas alternativas con precio — si querés sugerir buscar otra cosa, hacelo sin mencionar ningún producto específico ni precio
+- Si la búsqueda no devuelve resultados o el producto está sin stock, decilo honestamente. Si el contexto incluye un bloque [ALTERNATIVAS verificadas con stock en nuestra tienda], ofrecé 1 o 2 de esas opciones con su precio y link exactos, presentándolas como algo parecido que sí tenemos. Si NO hay bloque de alternativas, no menciones ningún producto específico ni precio
 - Si no entendés bien lo que pide el cliente, pedile que lo reformule antes de buscar
 - Si la búsqueda falla por error técnico, derivá a un asesor
 - Cuando no tenés información suficiente para responder con certeza, decí "No tengo ese dato, ¿podés darme más detalles?" — nunca rellenes con suposiciones
@@ -272,6 +273,48 @@ async def _generate_validated_response(
     return HANDOFF_FULL, f"guardrail: {reason} (handoff)", True
 
 
+def _product_line(p: dict) -> str:
+    """Línea estándar de producto para los bloques de contexto verificado."""
+    stock_val = p.get("stock")
+    stock_str = f"{stock_val} unidades" if stock_val and int(stock_val) > 0 else "SIN STOCK"
+    return f"- {p.get('title')} | Precio: ${p.get('price')} | Stock: {stock_str} | {p.get('permalink')}"
+
+
+def _format_alternatives_block(alternatives: list[dict]) -> str:
+    """Bloque [ALTERNATIVAS...] — al estar en el stock_context, el guardrail
+    permite estos precios/links (validate_response los encuentra textuales)."""
+    if not alternatives:
+        return ""
+    return (
+        "\n[ALTERNATIVAS verificadas con stock en nuestra tienda]\n"
+        + "\n".join(_product_line(p) for p in alternatives)
+        + "\n[IMPORTANTE: Si el producto pedido no está disponible, podés ofrecer 1 o 2 "
+        "de estas alternativas con su precio y link exactos. No inventes otras.]"
+    )
+
+
+async def _alternatives_block(
+    query: str, exclude_permalinks: frozenset = frozenset()
+) -> tuple[str, list[dict]]:
+    """
+    Busca alternativas con stock en el catálogo cacheado y arma el bloque para
+    el stock_context. Si el caché está vacío, falla, o no hay nada parecido,
+    retorna ("", []) y el contexto queda idéntico al flujo anterior.
+    """
+    if not query:
+        return "", []
+    try:
+        products = await get_catalog()
+        alts = find_alternatives(query, products, exclude_permalinks=exclude_permalinks)
+    except Exception as e:
+        logger.warning("No se pudieron buscar alternativas para '%s': %s", query, e)
+        return "", []
+    if not alts:
+        return "", []
+    logger.info("Alternativas para '%s': %s", query, [p.get("title") for p in alts])
+    return _format_alternatives_block(alts), alts
+
+
 def format_stock_context(tool_result: dict | None) -> str:
     """
     Formatea un tool_result estilo eval como el bloque canónico de contexto
@@ -287,6 +330,23 @@ def format_stock_context(tool_result: dict | None) -> str:
             "\n[IMPORTANTE: No inventes productos ni links. Decí honestamente que no "
             "encontraste ese producto en este momento.]"
         )
+    # Listas de productos y/o alternativas (formato del catálogo/tools)
+    if "products" in tool_result or "alternatives" in tool_result:
+        products = tool_result.get("products") or []
+        if products:
+            block = (
+                "\n[Resultados verificados en nuestra tienda]\n"
+                + "\n".join(_product_line(p) for p in products[:3])
+                + "\n[IMPORTANTE: Solo los productos con stock > 0 están disponibles. "
+                "Usá precios y links exactos — no inventes ni modifiques.]"
+            )
+        else:
+            block = (
+                "\n[Búsqueda realizada: sin resultados para este producto en ninguna fuente]"
+                "\n[IMPORTANTE: No inventes productos ni links. Decí honestamente que no "
+                "encontraste ese producto en este momento.]"
+            )
+        return block + _format_alternatives_block(tool_result.get("alternatives") or [])
     # Comparación de precios TN/ML — las etiquetas "tienda oficial" y "MercadoLibre"
     # también hacen que _pick_response_model rutee al modelo sensible (gpt-4o).
     if "precio_tn" in tool_result or "precio_ml" in tool_result:
@@ -832,6 +892,13 @@ async def process_message(
                 f"[IMPORTANTE: Informá si ese producto específico tiene stock en Klank según el dato de arriba. "
                 f"Si stock es 0 o None, no lo tenemos. Ofrecé alternativas de nuestra tienda si las hay.]"
             )
+            if not (product.get("stock") or 0):
+                alt_block, alts = await _alternatives_block(
+                    product.get("title", ""), frozenset({product.get("permalink")})
+                )
+                if alt_block:
+                    stock_context += alt_block
+                    tool_result = {**product, "alternatives": alts}
         else:
             stock_context = "\n[No se pudo consultar ese producto de ML. Informá al cliente que no pudiste verificar ese item específico.]"
 
@@ -860,6 +927,10 @@ async def process_message(
                 "\n[El cliente compartió una URL de ML. No encontramos ese producto exacto en nuestra tienda ni en ML.]"
                 "\n[IMPORTANTE: Informá que no tenemos ese artículo pero ofrecé buscar algo similar si el cliente quiere.]"
             )
+            alt_block, alts = await _alternatives_block(ml_product_name)
+            if alt_block:
+                stock_context += alt_block
+                tool_result = {**result, "alternatives": alts}
 
     else:
         # Consulta de texto — GPT extrae el término, si devuelve vacío no es consulta de producto
@@ -889,11 +960,22 @@ async def process_message(
                     "Usá precios y links exactos — no inventes ni modifiques. "
                     "NUNCA prometás avisar cuando vuelva el stock.]"
                 )
+                # Todos los resultados sin stock → sumar alternativas del catálogo
+                if not any((p.get("stock") or 0) > 0 for p in products[:3]):
+                    shown = frozenset(p.get("permalink") for p in products[:3])
+                    alt_block, alts = await _alternatives_block(search_query, shown)
+                    if alt_block:
+                        stock_context += alt_block
+                        tool_result = {**result, "alternatives": alts}
             else:
                 stock_context = (
                     "\n[Búsqueda realizada: sin resultados para este producto en ninguna fuente]"
                     "\n[IMPORTANTE: No inventes productos ni links. Decí honestamente que no encontraste ese producto en este momento.]"
                 )
+                alt_block, alts = await _alternatives_block(search_query)
+                if alt_block:
+                    stock_context += alt_block
+                    tool_result = {**result, "alternatives": alts}
 
     user_content = message + stock_context
 

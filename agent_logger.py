@@ -7,7 +7,7 @@ import memory
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"  # v2: alternativas verificadas del catálogo ante falta de stock
 
 _COLUMNS = (
     "phone_number", "direction", "user_message", "tool_used", "tool_result",
